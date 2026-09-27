@@ -560,11 +560,14 @@ fun AuraMainContent(repository: MediaRepository) {
                     transitionSpec = {
                         val initialIndex = when (initialState) {
                             NavDestination.LIBRARY.route -> 0
-                            NavDestination.DISCOVER.route -> 1
+                            NavDestination.CHANNELS.route -> 1
                             NavDestination.COMPARE.route -> 2
-                            NavDestination.COLLECTIONS.route -> 3
+                            NavDestination.FINDS.route -> 3
+                            NavDestination.MY_STUFF.route -> 4
+                            NavDestination.DISCOVER.route -> 4
+                            NavDestination.COLLECTIONS.route -> 4
                             NavDestination.PROFILE.route -> 4
-                            NavDestination.PLAYBACK_DIAGNOSTICS.route -> 4 // Same as profile for logic
+                            NavDestination.PLAYBACK_DIAGNOSTICS.route -> 4
                             NavDestination.INTELLIGENCE.route -> 5
                             NavDestination.FAVORITES.route -> 6
                             NavDestination.CLEANUP_REVIEW.route -> 7
@@ -573,9 +576,12 @@ fun AuraMainContent(repository: MediaRepository) {
                         }
                         val targetIndex = when (targetState) {
                             NavDestination.LIBRARY.route -> 0
-                            NavDestination.DISCOVER.route -> 1
+                            NavDestination.CHANNELS.route -> 1
                             NavDestination.COMPARE.route -> 2
-                            NavDestination.COLLECTIONS.route -> 3
+                            NavDestination.FINDS.route -> 3
+                            NavDestination.MY_STUFF.route -> 4
+                            NavDestination.DISCOVER.route -> 4
+                            NavDestination.COLLECTIONS.route -> 4
                             NavDestination.PROFILE.route -> 4
                             NavDestination.PLAYBACK_DIAGNOSTICS.route -> 4
                             NavDestination.INTELLIGENCE.route -> 5
@@ -629,9 +635,64 @@ fun AuraMainContent(repository: MediaRepository) {
                                     repository.scanLocalMedia(context, isManual = true)
                                 },
                                 onSyncClick = {
-                                    currentRoute = NavDestination.INTELLIGENCE.route
+                                    if (com.example.BuildConfig.ENABLE_DEVELOPER_TOOLS) {
+                                        currentRoute = NavDestination.INTELLIGENCE.route
+                                    }
                                 },
                                 deleteLauncher = deleteRequestLauncher
+                            )
+                        }
+                        NavDestination.CHANNELS.route -> {
+                            com.example.ui.screens.AuraChannelsScreen()
+                        }
+                        NavDestination.FINDS.route -> {
+                            com.example.ui.screens.AuraFindsScreen()
+                        }
+                        NavDestination.MY_STUFF.route -> {
+                            com.example.ui.screens.MyStuffScreen(
+                                repository = repository,
+                                discoverViewModel = discoverViewModel,
+                                mediaItems = mediaItems,
+                                onNavigateToFavorites = {
+                                    currentRoute = NavDestination.FAVORITES.route
+                                },
+                                onNavigateToCleanup = {
+                                    currentRoute = NavDestination.CLEANUP_REVIEW.route
+                                },
+                                onNavigateToPrivacyPolicy = {
+                                    currentRoute = NavDestination.PRIVACY_POLICY.route
+                                },
+                                onNavigateToDiagnostics = {
+                                    currentRoute = NavDestination.PLAYBACK_DIAGNOSTICS.route
+                                },
+                                onLaunchAuraMoments = {
+                                    showAuraMomentsSelection = true
+                                },
+                                onMediaSelect = { selectedItem, styleItems ->
+                                    val selectedIndex = styleItems.indexOfFirst { it.id == selectedItem.id }
+                                    if (selectedIndex != -1) {
+                                        repository.setPlaylist(
+                                            items = styleItems,
+                                            initialIndex = selectedIndex,
+                                            sourceTitle = "Signature Style"
+                                        )
+                                    }
+                                },
+                                onScanAndImport = {
+                                    currentRoute = NavDestination.LIBRARY.route
+                                },
+                                onCollectionSelect = { collectionItem, itemsInCollection ->
+                                    repository.setPlaylist(
+                                        items = itemsInCollection,
+                                        initialIndex = itemsInCollection.indexOfFirst { it.id == collectionItem.id }.coerceAtLeast(0),
+                                        sourceTitle = "Collection"
+                                    )
+                                },
+                                onFavoriteToggle = { id -> repository.addToFavorites(id) },
+                                onSearch = { query ->
+                                    repository.librarySearchQuery = query
+                                    currentRoute = NavDestination.LIBRARY.route
+                                }
                             )
                         }
                         NavDestination.DISCOVER.route -> {
@@ -723,7 +784,7 @@ fun AuraMainContent(repository: MediaRepository) {
                                     repository.addToFavorites(id)
                                 },
                                 onBack = {
-                                    currentRoute = NavDestination.PROFILE.route
+                                    currentRoute = NavDestination.MY_STUFF.route
                                 },
                                 onRefresh = {
                                     favoritesViewModel.refreshFavorites()

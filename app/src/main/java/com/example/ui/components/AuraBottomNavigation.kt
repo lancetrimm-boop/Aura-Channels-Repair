@@ -41,8 +41,11 @@ sealed class NavDestination(
     val testTag: String
 ) {
     object LIBRARY : NavDestination("library", "Library", Icons.Default.PhotoLibrary, Icons.Outlined.PhotoLibrary, "nav_library")
+    object CHANNELS : NavDestination("channels", "Channels", Icons.Default.Tv, Icons.Outlined.Tv, "nav_channels")
+    object COMPARE : NavDestination("compare", "Pairwise", Icons.AutoMirrored.Filled.CompareArrows, Icons.AutoMirrored.Outlined.CompareArrows, "nav_compare")
+    object FINDS : NavDestination("finds", "Finds", Icons.Default.Explore, Icons.Outlined.Explore, "nav_finds")
+    object MY_STUFF : NavDestination("my_stuff", "My Stuff", Icons.Default.Person, Icons.Outlined.Person, "nav_my_stuff")
     object DISCOVER : NavDestination("discover", "Discover", Icons.Default.AutoAwesome, Icons.Outlined.AutoAwesome, "nav_discover")
-    object COMPARE : NavDestination("compare", "Compare", Icons.AutoMirrored.Filled.CompareArrows, Icons.AutoMirrored.Outlined.CompareArrows, "nav_compare")
     object COLLECTIONS : NavDestination("collections", "Collections", Icons.Default.CollectionsBookmark, Icons.Outlined.CollectionsBookmark, "nav_collections")
     object PROFILE : NavDestination("profile", "Profile", Icons.Default.Person, Icons.Outlined.Person, "nav_profile")
     object INTELLIGENCE : NavDestination("intelligence", "Intelligence", Icons.AutoMirrored.Filled.Rule, Icons.AutoMirrored.Outlined.Rule, "nav_intelligence")
@@ -82,24 +85,13 @@ fun AuraBottomNavigation(
                 horizontalArrangement = Arrangement.SpaceAround,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val primaryDestinations = if (BuildConfig.ENABLE_DEVELOPER_TOOLS) {
-                    listOf(
-                        NavDestination.LIBRARY,
-                        NavDestination.DISCOVER,
-                        NavDestination.COMPARE,
-                        NavDestination.COLLECTIONS,
-                        NavDestination.PROFILE,
-                        NavDestination.INTELLIGENCE
-                    )
-                } else {
-                    listOf(
-                        NavDestination.LIBRARY,
-                        NavDestination.DISCOVER,
-                        NavDestination.COMPARE,
-                        NavDestination.COLLECTIONS,
-                        NavDestination.PROFILE
-                    )
-                }
+                val primaryDestinations = listOf(
+                    NavDestination.LIBRARY,
+                    NavDestination.CHANNELS,
+                    NavDestination.COMPARE,
+                    NavDestination.FINDS,
+                    NavDestination.MY_STUFF
+                )
 
                 primaryDestinations.forEach { destination ->
                     val isSelected = currentRoute == destination.route
