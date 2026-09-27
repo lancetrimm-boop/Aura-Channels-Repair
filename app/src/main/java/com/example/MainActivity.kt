@@ -263,6 +263,14 @@ fun AuraMainContent(repository: MediaRepository) {
         }
     )
 
+    val channelViewModel: com.example.ui.screens.ChannelViewModel = viewModel(
+        factory = object : androidx.lifecycle.ViewModelProvider.Factory {
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+                return com.example.ui.screens.ChannelViewModel(repository) as T
+            }
+        }
+    )
+
     var showEngagementDebugger by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
@@ -643,7 +651,15 @@ fun AuraMainContent(repository: MediaRepository) {
                             )
                         }
                         NavDestination.CHANNELS.route -> {
-                            com.example.ui.screens.AuraChannelsScreen()
+                            com.example.ui.screens.AuraChannelsScreen(
+                                viewModel = channelViewModel,
+                                onMediaSelect = { selectedItem, channelItems ->
+                                    val index = channelItems.indexOfFirst { it.id == selectedItem.id }.coerceAtLeast(0)
+                                    val isPhoto = !selectedItem.mediaType.equals("VIDEO", ignoreCase = true) && !selectedItem.mediaType.equals("MOVIE", ignoreCase = true)
+                                    val sourceTitle = if (isPhoto) "Aura Moments" else "Aura Channel — ${channelViewModel.selectedChannel.value.title}"
+                                    repository.setPlaylist(channelItems, index, sourceTitle)
+                                }
+                            )
                         }
                         NavDestination.FINDS.route -> {
                             com.example.ui.screens.AuraFindsScreen()
