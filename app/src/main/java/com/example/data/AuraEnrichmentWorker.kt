@@ -66,6 +66,12 @@ class AuraEnrichmentWorker(
         batch.forEach { entity ->
             if (isStopped) return@forEach
 
+            if (repository.isForegroundVisualQueryActive.value) {
+                Log.d(TAG, "Foreground visual query active - yielding enrichment worker item")
+                kotlinx.coroutines.delay(100)
+                if (repository.isForegroundVisualQueryActive.value) return@forEach
+            }
+
             // AURA WORKER STABILITY: Pre-check if we can actually improve this item
             val currentStatus = try { EnrichmentStatus.valueOf(entity.enrichmentStatus) } catch (e: Exception) { EnrichmentStatus.PENDING }
             

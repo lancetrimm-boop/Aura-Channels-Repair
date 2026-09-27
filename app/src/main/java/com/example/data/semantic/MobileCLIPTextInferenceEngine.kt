@@ -105,3 +105,22 @@ class OnnxRuntimeMobileCLIPTextInferenceEngine(
         }
     }
 }
+
+/**
+ * Local development and testing engine for MobileCLIP text embeddings.
+ */
+class LocalMobileCLIPTextInferenceEngine(
+    private val dimensionality: Int = 512
+) : MobileCLIPTextInferenceEngine {
+    private var isClosed = false
+    override fun isLoaded(): Boolean = !isClosed
+    override fun infer(inputIds: LongArray): FloatArray {
+        check(!isClosed) { "Engine closed" }
+        val seed = if (inputIds.isNotEmpty()) inputIds[0] else 42L
+        val random = java.util.Random(seed)
+        return FloatArray(dimensionality) { random.nextGaussian().toFloat() }
+    }
+    override fun close() {
+        isClosed = true
+    }
+}

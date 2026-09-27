@@ -95,9 +95,11 @@ object RecommendationEngine {
     ): List<ObsessionRecommendation> {
         val categories = computeDiscoverCategories(repository, tasteDNA, profile, stats, creatorProfiles)
         val obsessions = mutableListOf<ObsessionRecommendation>()
+        val seenMediaIds = mutableSetOf<String>()
 
         // 1. Hero / Next Obsession
         categories.nextObsession?.let { item ->
+            seenMediaIds.add(item.id)
             obsessions.add(ObsessionRecommendation(
                 id = "hero_${item.id}",
                 title = "Your Next Obsession",
@@ -110,28 +112,62 @@ object RecommendationEngine {
         }
 
         // 2. Fresh Arrivals
-        if (categories.freshForYou.isNotEmpty()) {
+        val freshUnique = categories.freshForYou.filterNot { it.id in seenMediaIds }.take(3)
+        if (freshUnique.isNotEmpty()) {
+            freshUnique.forEach { seenMediaIds.add(it.id) }
             obsessions.add(ObsessionRecommendation(
                 id = "fresh_arrivals",
                 title = "Fresh Arrivals",
                 subtitle = "Recently discovered content matching your evolving taste",
                 strategy = ObsessionStrategy.FreshArrivals,
-                previewItems = categories.freshForYou.take(3),
+                previewItems = freshUnique,
                 confidenceScore = 0.85f,
                 emotionalRole = EmotionalRole.EMERGING_INTEREST
             ))
         }
 
         // 3. The Remix
-        if (categories.fromYourFavorites.isNotEmpty()) {
+        val remixUnique = categories.fromYourFavorites.filterNot { it.id in seenMediaIds }.take(3)
+        if (remixUnique.isNotEmpty()) {
+            remixUnique.forEach { seenMediaIds.add(it.id) }
             obsessions.add(ObsessionRecommendation(
                 id = "fav_remix",
                 title = "The Remix",
                 subtitle = "New discoveries that feel like your saved favorites",
                 strategy = ObsessionStrategy.FavoriteRemix,
-                previewItems = categories.fromYourFavorites.take(3),
+                previewItems = remixUnique,
                 confidenceScore = 0.80f,
                 emotionalRole = EmotionalRole.DEEPENING
+            ))
+        }
+
+        // 4. Under The Radar
+        val radarUnique = categories.underTheRadar.filterNot { it.id in seenMediaIds }.take(3)
+        if (radarUnique.isNotEmpty()) {
+            radarUnique.forEach { seenMediaIds.add(it.id) }
+            obsessions.add(ObsessionRecommendation(
+                id = "under_radar",
+                title = "Under The Radar",
+                subtitle = "Hidden gems waiting to be discovered",
+                strategy = ObsessionStrategy.FreshArrivals,
+                previewItems = radarUnique,
+                confidenceScore = 0.75f,
+                emotionalRole = EmotionalRole.EMERGING_INTEREST
+            ))
+        }
+
+        // 5. A Little Different
+        val differentUnique = categories.aLittleDifferent.filterNot { it.id in seenMediaIds }.take(3)
+        if (differentUnique.isNotEmpty()) {
+            differentUnique.forEach { seenMediaIds.add(it.id) }
+            obsessions.add(ObsessionRecommendation(
+                id = "little_different",
+                title = "A Little Different",
+                subtitle = "Slightly outside your comfort zone",
+                strategy = ObsessionStrategy.FreshArrivals,
+                previewItems = differentUnique,
+                confidenceScore = 0.70f,
+                emotionalRole = EmotionalRole.EMERGING_INTEREST
             ))
         }
 
@@ -164,36 +200,48 @@ object RecommendationEngine {
         } else null
 
         val core = repository.intelligenceCore
-        if (core == null) return emptyList()
-        
-        val reqSortOption = when (compareStrategy) {
-            CompareStrategy.PERSONALIZED -> if (compareSort != CompareSortOption.RECOMMENDED) compareSort.name else "RANKING_REFINEMENT"
-            CompareStrategy.REDISCOVER -> "REDISCOVER"
-            CompareStrategy.LEAST_INTERACTED -> "LEAST_INTERACTED"
-            CompareStrategy.EXPLORE -> "EXPLORE"
-        }
+        if (core != null) {
+            try {
+                val reqSortOption = when (compareStrategy) {
+                    CompareStrategy.PERSONALIZED -> if (compareSort != CompareSortOption.RECOMMENDED) compareSort.name else "RANKING_REFINEMENT"
+                    CompareStrategy.REDISCOVER -> "REDISCOVER"
+                    CompareStrategy.LEAST_INTERACTED -> "LEAST_INTERACTED"
+                    CompareStrategy.EXPLORE -> "EXPLORE"
+                }
 
-        val req = IntelligenceRequest(
-            mode = IntelligenceMode.SORT,
-            sortOption = reqSortOption,
-            filterType = mediaTypeFilter,
-            limit = 10000, // High limit for library-wide coverage
-            tasteDNA = tasteDNA,
-            profile = profile,
-            stats = stats,
-            creatorProfiles = creatorProfiles,
-            comparisonCounts = repository.getComparisonCounts(),
-            poolOverride = poolOverride,
-            seed = seed
-        )
-        val response = core.processRequest(req)
-        if (response.isSuccess) {
-            return response.candidates.map { it.item to it.rankScore.toFloat() }
+                val req = IntelligenceRequest(
+                    mode = IntelligenceMode.SORT,
+                    sortOption = reqSortOption,
+                    filterType = mediaTypeFilter,
+                    limit = 100, // Top 100 candidates for Pairwise selection
+                    tasteDNA = tasteDNA,
+                    profile = profile,
+                    stats = stats,
+                    creatorProfiles = creatorProfiles,
+                    comparisonCounts = repository.getComparisonCounts(),
+                    poolOverride = poolOverride,
+                    seed = seed,
+                    skipPersistence = true
+                )
+                val response = core.processRequest(req)
+                if (response.isSuccess && response.candidates.isNotEmpty()) {
+                    return response.candidates.map { it.item to it.rankScore.toFloat() }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("RecommendationEngine", "IntelligenceCore processRequest failed, using fallback pool", e)
+            }
         }
         
-        // Final fallback (Safe degraded state - used in tests or when AI core fails)
+        // Final fallback (Safe degraded state - used in tests or when AI core fails or returns empty)
         val basePool = (inputItems ?: repository.mediaItems.value).filter { 
             AuraMediaCompatibilityEngine.isEligibleForImport(it.compatibilityStatus) && !it.isDeleted
+        }.filter { item ->
+            val type = item.mediaType.uppercase()
+            when (mediaTypeFilter.uppercase()) {
+                "PHOTO", "PHOTOS", "IMAGE", "IMAGES" -> type in listOf("PHOTO", "IMAGE") || type.startsWith("PHOTO") || type.startsWith("IMAGE")
+                "VIDEO", "VIDEOS", "MOVIE", "MOVIES" -> type in listOf("VIDEO", "MOVIE") || type.startsWith("VIDEO") || type.startsWith("MOVIE")
+                else -> true
+            }
         }.filter { 
             val sessionIds = (repository as? MediaRepository)?.compareSelectionSession?.value?.selectedIds ?: emptySet()
             if (sessionIds.isEmpty()) true else sessionIds.contains(it.id)
@@ -202,7 +250,7 @@ object RecommendationEngine {
         val sortedPool = when (compareStrategy) {
             CompareStrategy.REDISCOVER -> basePool.sortedByDescending { it.rating }
             CompareStrategy.LEAST_INTERACTED -> basePool.sortedBy { it.viewCount }
-            CompareStrategy.EXPLORE -> basePool.shuffled()
+            CompareStrategy.EXPLORE -> basePool.shuffled(java.util.Random(seed))
             else -> when (compareSort) {
                 CompareSortOption.NEWEST -> basePool.sortedByDescending { it.dateAdded }
                 CompareSortOption.OLDEST -> basePool.sortedBy { it.dateAdded }
@@ -211,7 +259,7 @@ object RecommendationEngine {
             }
         }
         
-        return sortedPool.map { it to 1.0f }
+        return sortedPool.take(100).map { it to 1.0f }
     }
 
     fun selectNextPairFromPool(
@@ -227,9 +275,10 @@ object RecommendationEngine {
         compareStrategy: CompareStrategy = CompareStrategy.PERSONALIZED
     ): Pair<MediaItem, MediaItem>? {
         val filteredPool = top100Pool.filter { (item, _) ->
+            val type = item.mediaType.uppercase()
             when (mediaTypeFilter.uppercase()) {
-                "PHOTO", "PHOTOS" -> item.mediaType.uppercase() in listOf("PHOTO", "IMAGE")
-                "VIDEO", "VIDEOS" -> item.mediaType.uppercase() in listOf("VIDEO", "MOVIE")
+                "PHOTO", "PHOTOS", "IMAGE", "IMAGES" -> type in listOf("PHOTO", "IMAGE") || type.startsWith("PHOTO") || type.startsWith("IMAGE")
+                "VIDEO", "VIDEOS", "MOVIE", "MOVIES" -> type in listOf("VIDEO", "MOVIE") || type.startsWith("VIDEO") || type.startsWith("MOVIE")
                 else -> true
             }
         }

@@ -519,30 +519,31 @@ fun AuraMainContent(repository: MediaRepository) {
                     onMicroMoment = { id, taps -> repository.recordMicroMoment(id, taps) },
                     onSeeSimilar = { targetItem ->
                         val requestId = java.util.UUID.randomUUID().toString().take(6)
-                        Log.d("SeeSimilarTrace", "STAGE=ORCHESTRATOR requestId=$requestId sourceId=${targetItem.id} title=\"${targetItem.title}\"")
+                        Log.d("SEE_SIMILAR_TRACE", "STAGE=ORCHESTRATOR requestId=$requestId sourceId=${targetItem.id} title=\"${targetItem.title}\"")
                         coroutineScope.launch {
                             val response = repository.getSimilarMedia(targetItem, requestId)
-                            Log.d("SeeSimilarTrace", "STAGE=RESULT requestId=$requestId resultCount=${response.candidates.size}")
+                            Log.d("SEE_SIMILAR_TRACE", "STAGE=RESULT requestId=$requestId isSuccess=${response.isSuccess} resultCount=${response.candidates.size}")
                             
                             if (response.isSuccess && response.candidates.isNotEmpty()) {
                                 val similar = response.candidates.map { it.item }
                                 repository.setPlaylist(items = similar, initialIndex = 0, sourceTitle = "See Similar — ${targetItem.title}")
                                 
-                                // Verification check: Did the playlist actually update?
                                 val active = repository.activePlaylist.value
                                 if (active != null && active.items.isNotEmpty()) {
-                                    Log.d("SeeSimilarTrace", "STAGE=SUCCESS requestId=$requestId playlistSize=${active.items.size}")
-                                    android.widget.Toast.makeText(context, "Loaded ${active.items.size} similar items", android.widget.Toast.LENGTH_SHORT).show()
+                                    val count = active.items.size
+                                    val countMsg = if (count == 1) "Loaded 1 similar item" else "Loaded $count similar items"
+                                    Log.d("SEE_SIMILAR_TRACE", "STAGE=SUCCESS requestId=$requestId playlistSize=$count")
+                                    android.widget.Toast.makeText(context, countMsg, android.widget.Toast.LENGTH_SHORT).show()
                                 } else {
-                                    Log.e("SeeSimilarTrace", "STAGE=PLAYLIST_FAILURE requestId=$requestId - Playlist became empty after sanitization.")
+                                    Log.e("SEE_SIMILAR_TRACE", "STAGE=PLAYLIST_FAILURE requestId=$requestId - Playlist became empty after sanitization.")
                                     android.widget.Toast.makeText(context, "No playable similar items found", android.widget.Toast.LENGTH_LONG).show()
                                 }
                             } else if (!response.isSuccess) {
-                                val msg = if (response.errorMessage == "STILL_PROCESSING") "Visual Search Failed: Still Processing" else "Intelligence Error: ${response.errorMessage}"
-                                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                                Log.e("SEE_SIMILAR_TRACE", "STAGE=FAILURE requestId=$requestId error=${response.errorMessage}")
+                                android.widget.Toast.makeText(context, "Couldn't find similar items", android.widget.Toast.LENGTH_LONG).show()
                             } else {
-                                Log.d("SeeSimilarTrace", "STAGE=NO_RESULTS requestId=$requestId")
-                                android.widget.Toast.makeText(context, "No similar media found", android.widget.Toast.LENGTH_SHORT).show()
+                                Log.d("SEE_SIMILAR_TRACE", "STAGE=NO_RESULTS requestId=$requestId")
+                                android.widget.Toast.makeText(context, "No visually similar items found", android.widget.Toast.LENGTH_SHORT).show()
                             }
                         }
                     },

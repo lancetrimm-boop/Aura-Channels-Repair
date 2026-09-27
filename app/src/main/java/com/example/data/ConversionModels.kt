@@ -122,7 +122,8 @@ data class ConversionCandidate(
     val mediaTitle: String?,
     val recommendation: ConversionRecommendation,
     val failureCount: Int,
-    val lastFailureTimestamp: Long
+    val lastFailureTimestamp: Long,
+    val isRemediated: Boolean = false
 )
 
 /**

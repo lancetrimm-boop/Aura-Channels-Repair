@@ -46,15 +46,7 @@ object AuraMediaTranscoder {
             )
         }
 
-        // 2. Setup Transformer
-        val transformer = Transformer.Builder(context)
-            .setVideoMimeType(MimeTypes.VIDEO_H264)
-            .setAudioMimeType(MimeTypes.AUDIO_AAC)
-            .build()
-
-        val mediaItem = MediaItem.fromUri(sourceUri)
-        val editedMediaItem = EditedMediaItem.Builder(mediaItem).build()
-        
+        // 2. Setup Transformer on Main Looper (Media3 Transformer requirement)
         val deferredResult = CompletableDeferred<Boolean>()
         var exportException: ExportException? = null
 
@@ -69,11 +61,21 @@ object AuraMediaTranscoder {
             }
         }
 
-        transformer.addListener(listener)
-        
-        // 3. Transcode
+        val mediaItem = MediaItem.fromUri(sourceUri)
+        val editedMediaItem = EditedMediaItem.Builder(mediaItem).build()
+
+        val transformer = withContext(Dispatchers.Main) {
+            val t = Transformer.Builder(context)
+                .setVideoMimeType(MimeTypes.VIDEO_H264)
+                .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                .build()
+            t.addListener(listener)
+            t
+        }
+
+        // 3. Transcode & Poll Progress on Main thread
         onProgress(ConversionStage.CONVERTING, 0)
-        val job = launch {
+        val progressJob = launch(Dispatchers.Main) {
             while (isActive && !deferredResult.isCompleted) {
                 val progressHolder = ProgressHolder()
                 val state = transformer.getProgress(progressHolder)
@@ -85,9 +87,11 @@ object AuraMediaTranscoder {
         }
 
         try {
-            transformer.start(editedMediaItem, tempFile.absolutePath)
+            withContext(Dispatchers.Main) {
+                transformer.start(editedMediaItem, tempFile.absolutePath)
+            }
             val transformerSuccess = deferredResult.await()
-            job.cancel()
+            progressJob.cancel()
 
             if (!transformerSuccess) {
                 if (tempFile.exists()) tempFile.delete()
@@ -147,7 +151,7 @@ object AuraMediaTranscoder {
             )
 
         } catch (e: Exception) {
-            job.cancel()
+            progressJob.cancel()
             if (tempFile.exists()) tempFile.delete()
             return@withContext SingleFileConversionResult(
                 status = ConversionStatus.REQUIRED,

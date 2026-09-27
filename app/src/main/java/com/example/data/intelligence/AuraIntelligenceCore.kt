@@ -329,7 +329,9 @@ class AuraIntelligenceCore(
             }
             "RANKING_REFINEMENT" -> {
                 val counts = request.comparisonCounts ?: emptyMap()
-                items.map { item ->
+                val targetCount = request.limit.coerceAtLeast(100)
+                val topCandidates = items.sortedBy { counts[it.id] ?: 0 }.take(targetCount)
+                topCandidates.map { item ->
                     val count = counts[item.id] ?: 0
                     val jitter = Random(item.id.hashCode().toLong() + request.seed).nextDouble() * 0.1
                     IntelligenceCandidate(
@@ -440,11 +442,25 @@ class AuraIntelligenceCore(
         val refId = request.referenceItemId ?: return emptyList()
         val provider = repository.mobileCLIPProvider
         val semanticRepo = repository.semanticRepresentationRepository
-        val visualVector = request.visualVector ?: if (provider != null && semanticRepo != null) {
+        val storedVector = request.visualVector ?: if (provider != null && semanticRepo != null) {
              collector.timeDatabase { semanticRepo.getSpecificRepresentation(refId, SemanticRepresentationType.VISUAL, provider.descriptor)?.vector }
         } else null
 
-        if (visualVector == null) throw IllegalStateException("STILL_PROCESSING")
+        val visualVector = storedVector ?: run {
+            val ctx = repository.applicationContext ?: return@run null
+            val refItem = repository.getMediaItemById(refId) ?: return@run null
+            val uri = refItem.uriPath.ifEmpty { refItem.imageUrl }
+            if (uri.isEmpty()) return@run null
+            val bitmap = com.example.util.MediaThumbnailFetcher.getThumbnail(ctx, uri) ?: return@run null
+            val scaled = if (bitmap.width > 512 || bitmap.height > 512) android.graphics.Bitmap.createScaledBitmap(bitmap, 512, 512, true) else bitmap
+            val result = if (provider != null && provider.isReady()) {
+                provider.generateEmbedding(refId, SemanticInput.ExplicitBitmap(scaled), "similar_query")
+            } else null
+            if (scaled !== bitmap) scaled.recycle()
+            if (result is EmbeddingResult.Success) result.representation.vector else null
+        }
+
+        if (visualVector == null) throw IllegalStateException("REFERENCE_THUMBNAIL_UNAVAILABLE")
         
         DecisionTraceCollector.logEvent(request.requestId, com.example.ui.models.TraceEventType.CHANNEL_RETRIEVAL_START, "Channel retrieval starting for similar")
         val channelResults = collector.timeDatabase { retrievalRouter.retrieve(request.copy(visualVector = visualVector)) }
@@ -523,9 +539,11 @@ class AuraIntelligenceCore(
         val creators = request.creatorProfiles ?: repository.creatorProfiles.value
         val config = HybridSearchConfig()
         
+        val isSimilarMode = request.mode == IntelligenceMode.SIMILAR
         val isTextSearch = !request.query.isNullOrBlank()
-        val isPureVisual = !isTextSearch && (request.visualVector != null || request.mode == IntelligenceMode.SIMILAR)
+        val isPureVisual = !isTextSearch && (request.visualVector != null || isSimilarMode)
         val precisionThreshold = when {
+            isSimilarMode -> 0.45f
             isTextSearch -> config.minTextSemanticSimilarity
             isPureVisual -> config.minSemanticSimilarity
             else -> 0.0f
@@ -664,9 +682,10 @@ class AuraIntelligenceCore(
     private fun buildProvenance(evidence: List<EvidenceItem>, finalScore: Double): String = "Score ${"%.3f".format(finalScore)}"
 
     private fun matchesFilterType(item: MediaItem, filterType: String): Boolean {
+        val isVideo = item.mediaType.equals("VIDEO", ignoreCase = true) || item.mediaType.equals("MOVIE", ignoreCase = true) || item.mediaType.startsWith("VIDEO", ignoreCase = true) || item.mediaType.startsWith("MOVIE", ignoreCase = true)
         return when (filterType.uppercase()) {
-            "PHOTO" -> item.mediaType.uppercase() in listOf("PHOTO", "IMAGE")
-            "VIDEO" -> item.mediaType.uppercase() in listOf("VIDEO", "MOVIE")
+            "PHOTO", "PHOTOS", "IMAGE", "IMAGES" -> !isVideo
+            "VIDEO", "VIDEOS", "MOVIE", "MOVIES" -> isVideo
             else -> true
         }
     }

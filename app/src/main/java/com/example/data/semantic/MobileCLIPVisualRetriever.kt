@@ -88,8 +88,7 @@ class DefaultMobileCLIPVisualRetriever(
     ): List<RankedChannelItem> {
         android.util.Log.i("VISUAL_RETRIEVAL", "RETRIEVE_VECTOR_START: dim=${queryVector.size}")
         
-        // AURA SEARCH FIX 3.2: Calibrated minimum visual similarity threshold (0.4f)
-        val calibratedMinSim = if (minSimilarity < 0) 0.4f else minSimilarity
+        val calibratedMinSim = if (minSimilarity < 0) 0.0f else minSimilarity
 
         val result = try {
             visualSearchService.search(

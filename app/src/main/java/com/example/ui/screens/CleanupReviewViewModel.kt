@@ -92,91 +92,97 @@ class CleanupReviewViewModel(
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, isLocked = false) }
-            
-            val allItems = repository.mediaItems.value
-            val tasteDNA = repository.tasteDNA.value
-            val stats = repository.intelligenceStats.value
-            
-            // Perform heavy calculation in background
-            kotlinx.coroutines.withContext(backgroundDispatcher) {
-                // 1. Generate Keep Scores
-                val allIds = allItems.map { it.id }
-                val skipCounts = repository.getSkipCounts(allIds)
-                val hashFrequenciesList = repository.getContentHashFrequencies()
-                val hashFrequenciesMap = hashFrequenciesList.associate { it.contentHash to it.count }
+            try {
+                val allItems = repository.mediaItems.value
+                val tasteDNA = repository.tasteDNA.value
+                val stats = repository.intelligenceStats.value
+                
+                // Perform heavy calculation in background
+                kotlinx.coroutines.withContext(backgroundDispatcher) {
+                    // 1. Generate Keep Scores
+                    val allIds = allItems.map { it.id }
+                    val skipCounts = repository.getSkipCounts(allIds)
+                    val hashFrequenciesList = repository.getContentHashFrequencies()
+                    val hashFrequenciesMap = hashFrequenciesList.associate { it.contentHash to it.count }
 
-                val keepScoreResults = allItems.map { item ->
-                    val evidence = ExplorationEngine.calculateEvidence(item, tasteDNA, stats)
-                    val estimatedWatchDuration = (item.progress * item.durationMs) / 1000f
-                    
-                    val frequency = hashFrequenciesMap[item.contentHash ?: ""] ?: 1
-                    val rarityScore = 1.0f / frequency
+                    val keepScoreResults = allItems.map { item ->
+                        val evidence = ExplorationEngine.calculateEvidence(item, tasteDNA, stats)
+                        val estimatedWatchDuration = (item.progress * item.durationMs) / 1000f
+                        
+                        val frequency = hashFrequenciesMap[item.contentHash ?: ""] ?: 1
+                        val rarityScore = 1.0f / frequency
 
-                    KeepScoreEngine.calculateScore(
-                        KeepScoreInput(
-                            mediaId = item.id,
-                            fileSize = item.sizeBytes,
-                            dateAdded = item.dateAdded,
-                            exposureCount = item.exposureCount,
-                            lastExposedTimestamp = item.lastExposedTimestamp,
-                            viewCount = item.viewCount,
-                            playCount = item.viewCount,
-                            averageWatchDuration = estimatedWatchDuration,
-                            completionPercentage = item.progress,
-                            skipCount = skipCounts[item.id] ?: 0,
-                            rating = item.rating,
-                            isFavorite = item.isFavorite,
-                            tasteAlignmentScore = evidence.exploitationScore,
-                            rarityScore = rarityScore,
-                            contentHash = item.contentHash
+                        KeepScoreEngine.calculateScore(
+                            KeepScoreInput(
+                                mediaId = item.id,
+                                fileSize = item.sizeBytes,
+                                dateAdded = item.dateAdded,
+                                exposureCount = item.exposureCount,
+                                lastExposedTimestamp = item.lastExposedTimestamp,
+                                viewCount = item.viewCount,
+                                playCount = item.viewCount,
+                                averageWatchDuration = estimatedWatchDuration,
+                                completionPercentage = item.progress,
+                                skipCount = skipCounts[item.id] ?: 0,
+                                rating = item.rating,
+                                isFavorite = item.isFavorite,
+                                tasteAlignmentScore = evidence.exploitationScore,
+                                rarityScore = rarityScore,
+                                contentHash = item.contentHash
+                            )
                         )
-                    )
-                }
+                    }
 
-                // 2. Generate Recommendations
-                val metadataMap = allItems.associate { item ->
-                    item.id to CleanupItemMetadata(
-                        mediaId = item.id,
-                        title = item.title,
-                        sizeBytes = item.sizeBytes,
-                        exposureCount = item.exposureCount,
-                        viewCount = item.viewCount,
-                        mediaType = item.mediaType,
-                        contentHash = item.contentHash,
-                        isFavorite = item.isFavorite,
-                        width = item.width,
-                        height = item.height,
-                        durationMs = item.durationMs,
-                        dateAdded = item.dateAdded
-                    )
-                }
+                    // 2. Generate Recommendations
+                    val metadataMap = allItems.associate { item ->
+                        item.id to CleanupItemMetadata(
+                            mediaId = item.id,
+                            title = item.title,
+                            sizeBytes = item.sizeBytes,
+                            exposureCount = item.exposureCount,
+                            viewCount = item.viewCount,
+                            mediaType = item.mediaType,
+                            contentHash = item.contentHash,
+                            isFavorite = item.isFavorite,
+                            width = item.width,
+                            height = item.height,
+                            durationMs = item.durationMs,
+                            dateAdded = item.dateAdded
+                        )
+                    }
 
-                val recommendations = CleanupRecommendationEngine.generateRecommendations(
-                    keepScoreResults,
-                    metadataMap
-                )
-
-                // 3. Calculate Category Stats
-                val statsMap = CleanupCategory.entries.associateWith { cat ->
-                    val catRecs = recommendations.filter { it.category == cat }
-                    CategoryStat(
-                        count = catRecs.size,
-                        storageBytes = catRecs.sumOf { it.storageSize },
-                        averageKeepScore = if (catRecs.isNotEmpty()) catRecs.map { it.keepScore }.average().toFloat() else 0f
+                    val recommendations = CleanupRecommendationEngine.generateRecommendations(
+                        keepScoreResults,
+                        metadataMap
                     )
-                }
 
-                _uiState.update { state ->
-                    val newSelectedIds = state.selectedIds.intersect(recommendations.map { it.mediaId }.toSet())
-                    val newState = state.copy(
-                        recommendations = recommendations,
-                        mediaItems = allItems.associateBy { it.id },
-                        categoryStats = statsMap,
-                        isLoading = false,
-                        selectedIds = newSelectedIds
-                    )
-                    applyFiltersAndSort(newState)
+                    // 3. Calculate Category Stats
+                    val statsMap = CleanupCategory.entries.associateWith { cat ->
+                        val catRecs = recommendations.filter { it.category == cat }
+                        CategoryStat(
+                            count = catRecs.size,
+                            storageBytes = catRecs.sumOf { it.storageSize },
+                            averageKeepScore = if (catRecs.isNotEmpty()) catRecs.map { it.keepScore }.average().toFloat() else 0f
+                        )
+                    }
+
+                    _uiState.update { state ->
+                        val newSelectedIds = state.selectedIds.intersect(recommendations.map { it.mediaId }.toSet())
+                        val newState = state.copy(
+                            recommendations = recommendations,
+                            mediaItems = allItems.associateBy { it.id },
+                            categoryStats = statsMap,
+                            isLoading = false,
+                            selectedIds = newSelectedIds
+                        )
+                        applyFiltersAndSort(newState)
+                    }
                 }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                android.util.Log.e("CleanupReviewViewModel", "Failed to load cleanup recommendations", e)
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
             }
         }
     }

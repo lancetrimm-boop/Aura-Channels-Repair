@@ -86,7 +86,7 @@ class RetrievalRouter(
                         // Multi-Vector Union Strategy (A ∪ B ∪ C)
                         queryVectors != null && queryVectors.isNotEmpty() -> {
                             val allResults = queryVectors.flatMap { v ->
-                                provider.retrieveVisualCandidates(v, request.limit, 0.15f)
+                                provider.retrieveVisualCandidates(v, request.limit, 0.0f)
                             }
                             
                             // Deduplicate and re-rank
@@ -104,7 +104,7 @@ class RetrievalRouter(
                                 .take(request.limit * 2)
                                 .mapIndexed { index, item -> item.copy(rank = index + 1) }
                         }
-                        vector != null -> provider.retrieveVisualCandidates(vector, request.limit * 2, 0.15f)
+                        vector != null -> provider.retrieveVisualCandidates(vector, request.limit * 2, 0.0f)
                         // AURA REPAIR: Only invoke text-to-visual if the query is a simple text request 
                         // and we have no visual vectors (prevent invalid type relay for multimodal)
                         query != null && query.isNotBlank() && request.queryVectors == null -> {

@@ -160,11 +160,16 @@ fun PlaybackDiagnosticsScreen(
                             val eligibility = remember(error) { 
                                 AuraConversionAdvisor.evaluateEligibility(error) 
                             }
+                            val candidate = eligibilitySummary.candidates.find { 
+                                it.mediaId == error.mediaItemId || it.sourceUri.toString() == error.mediaUri 
+                            }
+                            val isRemediated = candidate?.isRemediated == true
                             
                             PlaybackErrorCard(
                                 error = error,
                                 onClick = { selectedError = error },
-                                isConvertible = eligibility == ConversionEligibility.CONVERTIBLE,
+                                isConvertible = !isRemediated && eligibility == ConversionEligibility.CONVERTIBLE,
+                                isRemediated = isRemediated,
                                 onConvert = { context -> 
                                     viewModel.startConversion(context, error)
                                 }
@@ -172,7 +177,7 @@ fun PlaybackDiagnosticsScreen(
                         }
                     } else if (viewMode == ViewMode.CONVERSION) {
                         val convertibleCandidates = eligibilitySummary.candidates.filter { 
-                            it.recommendation.eligibility == ConversionEligibility.CONVERTIBLE 
+                            !it.isRemediated && it.recommendation.eligibility == ConversionEligibility.CONVERTIBLE 
                         }
                         
                         if (convertibleCandidates.isEmpty()) {
@@ -659,6 +664,33 @@ private fun ConversionJobCard(
                 status != com.example.data.ConversionJobStatus.FAILED && 
                 status != com.example.data.ConversionJobStatus.CANCELLED) {
                 Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val stageLabel = when (status) {
+                        com.example.data.ConversionJobStatus.QUEUED -> "Queued"
+                        com.example.data.ConversionJobStatus.PREPARING -> "Preparing..."
+                        com.example.data.ConversionJobStatus.CONVERTING -> "Converting to H.264"
+                        com.example.data.ConversionJobStatus.VALIDATING -> "Validating output..."
+                        com.example.data.ConversionJobStatus.TESTING_PLAYBACK -> "Testing playback..."
+                        else -> "Processing..."
+                    }
+                    Text(
+                        text = stageLabel,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AuraPurple
+                    )
+                    Text(
+                        text = "${job.progress}%",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = AuraPurple
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
                 LinearProgressIndicator(
                     progress = { job.progress / 100f },
                     modifier = Modifier.fillMaxWidth().height(4.dp).clip(CircleShape),
@@ -801,6 +833,7 @@ private fun EmptyDiagnosticsState() {
 private fun PlaybackErrorCard(
     error: PlaybackErrorLogEntity,
     isConvertible: Boolean = false,
+    isRemediated: Boolean = false,
     onConvert: (Context) -> Unit = {},
     onClick: () -> Unit
 ) {
@@ -884,7 +917,27 @@ private fun PlaybackErrorCard(
                 }
             }
 
-            if (isConvertible) {
+            if (isRemediated) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Surface(
+                    color = Color(0xFF10B981).copy(alpha = 0.1f),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "REMEDIATED VIA CONVERSION",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF10B981)
+                        )
+                    }
+                }
+            } else if (isConvertible) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(
                     onClick = { onConvert(context) },

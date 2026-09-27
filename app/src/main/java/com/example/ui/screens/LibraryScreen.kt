@@ -580,7 +580,7 @@ fun LibraryContent(
             // Manual scans are already handled by PullToRefreshBox.
 
             PullToRefreshBox(
-                isRefreshing = (state.scanProgress.isScanning && state.scanProgress.isManual) || (latestSortedItems.isEmpty() && isSearchActive && state.searchError == null),
+                isRefreshing = state.scanProgress.isScanning && state.scanProgress.isManual,
                 onRefresh = { 
                     onRefresh()
                     stableItems = emptyList() // Force reload on manual refresh

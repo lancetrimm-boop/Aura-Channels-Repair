@@ -10,6 +10,7 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
+import kotlinx.coroutines.flow.first
 import com.example.compatibility.*
 import com.example.data.contribution.*
 import com.example.data.db.*
@@ -115,6 +116,12 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
     @Volatile var hybridSearchEngine: HybridSearchEngine? = null; private set
 
     init {
+        try {
+            val field = android.database.CursorWindow::class.java.getDeclaredField("sCursorWindowSize")
+            field.isAccessible = true
+            field.set(null, 100 * 1024 * 1024) // 100MB CursorWindow size for large media libraries
+        } catch (_: Throwable) {}
+
         val bootstrapRetriever = ProductionLexicalRetriever()
         val router = RetrievalRouter(bootstrapRetriever, null, null)
         val core = AuraIntelligenceCore(this, router, dispatcher = dispatcher)
@@ -147,6 +154,7 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
     private val _activePlaylist = MutableStateFlow<PlaylistState?>(null); val activePlaylist = _activePlaylist.asStateFlow()
     private val _isPlayerActive = MutableStateFlow(false); val isPlayerActive = _isPlayerActive.asStateFlow()
     private val _isLibraryReady = MutableStateFlow(false); val isLibraryReady = _isLibraryReady.asStateFlow()
+    private val _isForegroundVisualQueryActive = MutableStateFlow(false); val isForegroundVisualQueryActive = _isForegroundVisualQueryActive.asStateFlow()
     
     private val _compareSelectionSession = MutableStateFlow(CompareSelectionSession()); val compareSelectionSession = _compareSelectionSession.asStateFlow()
     private val _compareMediaType = MutableStateFlow(CompareMediaTypeFilter.PHOTOS); val compareMediaType = _compareMediaType.asStateFlow()
@@ -181,7 +189,7 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
     val momentDispatcher = AuraMomentDispatcher(this)
     val safeDeleteManager = com.example.data.cleanup.SafeDeleteManager(this, scope)
     var visualContextEngine = com.example.data.visual.VisualContextEngine(this)
-    private var applicationContext: Context? = null
+    var applicationContext: Context? = null; private set
     
     var lastPlaybackPositionMs: Long = 0; private set
     var isResumingFromBackground: Boolean = false; private set
@@ -226,15 +234,18 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
                         val map = items.associateBy { it.id }
                         res.candidates.mapNotNull { map[it.mediaId] }.filter { matchesFilterType(it, filter) } 
                     } else {
-                        performLegacySearch(items.filter { matchesFilterType(it, filter) }, search.query ?: "") 
+                        if (search is SearchRequest.Visual || search is SearchRequest.MultiVisual) emptyList()
+                        else performLegacySearch(items.filter { matchesFilterType(it, filter) }, search.query ?: "") 
                     }
                 } catch (e: Exception) { 
-                    performLegacySearch(items.filter { matchesFilterType(it, filter) }, search.query ?: "") 
+                    if (search is SearchRequest.Visual || search is SearchRequest.MultiVisual) emptyList()
+                    else performLegacySearch(items.filter { matchesFilterType(it, filter) }, search.query ?: "") 
                 } 
             } else {
-                performLegacySearch(items.filter { matchesFilterType(it, filter) }, search.query ?: "")
+                if (search is SearchRequest.Visual || search is SearchRequest.MultiVisual) emptyList()
+                else performLegacySearch(items.filter { matchesFilterType(it, filter) }, search.query ?: "")
             }
-        } ?: performLegacySearch(items.filter { matchesFilterType(it, filter) }, search.query ?: "")
+        } ?: (if (search is SearchRequest.Visual || search is SearchRequest.MultiVisual) emptyList() else performLegacySearch(items.filter { matchesFilterType(it, filter) }, search.query ?: ""))
     }.stateIn(scope, SharingStarted.WhileSubscribed(5000), emptyList())
     
     val latestAiSortRecommendation = latestSortedFullItemsFlow.map { list -> list.map { toLibraryItemUi(it) } }.distinctUntilChanged().flowOn(dispatcher).stateIn(scope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -324,8 +335,12 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
                     }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: IllegalStateException) {
-                    if (!isDatabaseClosedException(e)) throw e
+                } catch (e: Exception) {
+                    if (e is IllegalStateException && isDatabaseClosedException(e)) {
+                        // DB closed
+                    } else {
+                        Log.e("MediaRepository", "Error observing media database", e)
+                    }
                 }
             }
             launch {
@@ -405,15 +420,37 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
             intelligenceCore = AuraIntelligenceCore(this, router, dispatcher = dispatcher)
             hybridSearchEngine = DefaultHybridSearchEngine(intelligenceCore!!)
             try {
-                mobileCLIPProvider = MobileCLIPEmbeddingProvider(OnnxRuntimeMobileCLIPInferenceEngine(modelPath = com.example.util.ModelAssetLoader.getLocalPath(context, "models/mobileclip_s0_image.onnx")))
-                val clipTokenizer = ClipBpeTokenizer.fromAssets(context.assets.open("models/mobileclip_vocab.json").use { it.bufferedReader().readText() }, context.assets.open("models/mobileclip_merges.txt").use { it.bufferedReader().readText() })
-                mobileClipTextProvider = MobileCLIPTextEmbeddingProvider(OnnxRuntimeMobileCLIPTextInferenceEngine(modelPath = com.example.util.ModelAssetLoader.getLocalPath(context, "models/mobileclip_s0_text.onnx")), clipTokenizer)
+                val clipEngine = try {
+                    OnnxRuntimeMobileCLIPInferenceEngine(modelPath = com.example.util.ModelAssetLoader.getLocalPath(context, "models/mobileclip_s0_image.onnx"))
+                } catch (e: Exception) {
+                    Log.w("MediaRepository", "Failed to load MobileCLIP ONNX image model, falling back to LocalMobileCLIPInferenceEngine", e)
+                    LocalMobileCLIPInferenceEngine()
+                }
+                mobileCLIPProvider = MobileCLIPEmbeddingProvider(clipEngine)
+
+                val clipTokenizer = try {
+                    ClipBpeTokenizer.fromAssets(context.assets.open("models/mobileclip_vocab.json").use { it.bufferedReader().readText() }, context.assets.open("models/mobileclip_merges.txt").use { it.bufferedReader().readText() })
+                } catch (e: Exception) {
+                    ClipBpeTokenizer(emptyMap(), emptyList())
+                }
+                val textEngine = try {
+                    OnnxRuntimeMobileCLIPTextInferenceEngine(modelPath = com.example.util.ModelAssetLoader.getLocalPath(context, "models/mobileclip_s0_text.onnx"))
+                } catch (e: Exception) {
+                    LocalMobileCLIPTextInferenceEngine()
+                }
+                mobileClipTextProvider = MobileCLIPTextEmbeddingProvider(textEngine, clipTokenizer)
+
                 visualIndexingService = DefaultVisualIndexingService(mobileCLIPProvider!!, retriever, semanticRepresentationRepository!!)
                 scope.launch { try { visualIndexingService?.initializeIndex() } catch (e: Exception) {} }
                 visualContextEngine = com.example.data.visual.VisualContextEngine(this, mobileCLIPProvider, semanticRepresentationRepository, semanticCandidateRetriever)
                 router.visualProvider = DefaultMobileCLIPVisualRetriever(DefaultSemanticSearchService(mobileClipTextProvider!!, retriever))
                 hybridSearchEngine = DefaultHybridSearchEngine(intelligenceCore!!)
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+                Log.e("MediaRepository", "MobileCLIP initialization error", e)
+                if (mobileCLIPProvider == null) {
+                    mobileCLIPProvider = MobileCLIPEmbeddingProvider(LocalMobileCLIPInferenceEngine())
+                }
+            }
             _aiState.value = AIState.READY
         } catch (e: Exception) { _aiState.value = AIState.ERROR }
     }
@@ -458,68 +495,83 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
     private val recentPairs = mutableListOf<Pair<String, String>>()
     private val recentItemIds = mutableListOf<String>()
     
+    @Volatile private var preFetchedPair: Pair<MediaItem, MediaItem>? = null
+    @Volatile private var cachedDiscoveryState: SystemDiscoveryState? = null
+    @Volatile private var cachedDiscoveryStateTimestamp: Long = 0L
+
+    private fun getDiscoveryStateMemoized(items: List<MediaItem>): SystemDiscoveryState {
+        val now = System.currentTimeMillis()
+        val cached = cachedDiscoveryState
+        if (cached != null && (now - cachedDiscoveryStateTimestamp < 30_000L)) {
+            return cached
+        }
+        val fresh = ConfidenceEngine.calculateDiscoveryState(items, _intelligenceStats.value)
+        cachedDiscoveryState = fresh
+        cachedDiscoveryStateTimestamp = now
+        return fresh
+    }
+
     fun refreshPairwiseCandidatePoolAndSelectNext(forceNextPair: Boolean = true) {
-        scope.launch {
+        scope.launch(Dispatchers.Default) {
             val session = _compareSelectionSession.value
             val mediaTypeFilter = _compareMediaType.value
             val rawItems = if (session.isActive) _mediaItems.value.filter { it.id in session.selectedIds } else _mediaItems.value
             val items = rawItems.filter { item ->
+                val isVideo = item.mediaType.equals("VIDEO", ignoreCase = true) || item.mediaType.equals("MOVIE", ignoreCase = true) || item.mediaType.startsWith("VIDEO", ignoreCase = true) || item.mediaType.startsWith("MOVIE", ignoreCase = true)
                 when (mediaTypeFilter) {
-                    CompareMediaTypeFilter.PHOTOS -> item.mediaType.equals("PHOTO", ignoreCase = true) || item.mediaType.equals("IMAGE", ignoreCase = true)
-                    CompareMediaTypeFilter.VIDEOS -> item.mediaType.equals("VIDEO", ignoreCase = true)
+                    CompareMediaTypeFilter.PHOTOS -> !isVideo
+                    CompareMediaTypeFilter.VIDEOS -> isVideo
                 }
             }
             val eligible = items.filter { it.itemCount == null && AuraMediaCompatibilityEngine.isEligibleForImport(it.compatibilityStatus) }
-            if (session.isActive && !session.isComplete) {
-                val totalPossiblePairs = (eligible.size * (eligible.size - 1)) / 2
-                val distinctCompared = session.comparedPairIds.map { 
-                    if (it.first < it.second) it.first to it.second else it.second to it.first 
-                }.toSet().size
-                if (session.roundNumber > session.maxRounds) {
-                    _compareSelectionSession.update { it.copy(isComplete = true, completionReason = "Session round limit reached.") }
-                } else if (eligible.size < 2) {
-                    _compareSelectionSession.update { it.copy(isComplete = true, completionReason = "Fewer than 2 eligible items remain.") }
-                } else if (distinctCompared >= totalPossiblePairs) {
-                    _compareSelectionSession.update { it.copy(isComplete = true, completionReason = "All unique pairs exhausted.") }
-                }
-            }
             if (eligible.size < 2) { 
                 _pairwiseState.value = PairwiseComparison("p_empty", _pairwiseState.value.roundNumber, 50, emptyMediaItem, emptyMediaItem)
+                preFetchedPair = null
                 return@launch 
             }
-            val currentWins = synchronized(pairwiseLock) { pairwiseWins.toMap() }
-            val currentLosses = synchronized(pairwiseLock) { pairwiseLosses.toMap() }
-            val currentRecentPairs = synchronized(pairwiseLock) { recentPairs.toList() }
-            val currentRecentItemIds = synchronized(pairwiseLock) { recentItemIds.toList() }
-            val top100 = RecommendationEngine.getTop100PairwiseCandidates(
-                repository = this@MediaRepository, 
-                winsMap = currentWins, 
-                lossesMap = currentLosses, 
-                mediaTypeFilter = mediaTypeFilter.name,
-                compareStrategy = _compareStrategy.value, 
-                compareSort = _compareSort.value,
-                inputItems = eligible
-            )
-            _pairwiseDiagnostics.value = PairwiseDiagnostics(
-                totalEligibleMedia = eligible.size,
-                top100CandidatePoolSize = top100.size,
-                topCandidateIds = top100.map { it.first.id }
-            )
-            val selectedPair = RecommendationEngine.selectNextPairFromPool(
-                top100, 
-                _comparisonCounts.value, 
-                if (session.isActive) session.comparedPairIds else currentRecentPairs, 
-                if (session.isActive) session.comparedPairIds.flatMap { listOf(it.first, it.second) } else currentRecentItemIds, 
-                mediaTypeFilter.name, 
-                _librarySessionSeed.value, 
-                DiscoveryPolicyManager.resolveStrategy(_discoveryPolicy.value, _userIntent.value, RecommendationObjective.RANKING_REFINEMENT, ConfidenceEngine.calculateDiscoveryState(items, _intelligenceStats.value), _tasteDNA.value, _preferenceProfile.value), 
-                _tasteDNA.value, 
-                _creatorProfiles.value, 
-                _compareStrategy.value
-            )
-            if (selectedPair != null) {
-                val next = selectedPair
-                val round = if (session.isActive) session.roundNumber else (if (forceNextPair) _pairwiseState.value.roundNumber + 1 else _pairwiseState.value.roundNumber)
+
+            val currentPair = _pairwiseState.value
+            val isCurrentEmpty = currentPair.optionA.id.isEmpty() || currentPair.optionB.id.isEmpty()
+            val shouldAdvance = forceNextPair || isCurrentEmpty
+
+            var selectedPair: Pair<MediaItem, MediaItem>? = null
+            if (shouldAdvance && preFetchedPair != null) {
+                selectedPair = preFetchedPair
+                preFetchedPair = null
+            }
+
+            if (selectedPair == null) {
+                val currentWins = synchronized(pairwiseLock) { pairwiseWins.toMap() }
+                val currentLosses = synchronized(pairwiseLock) { pairwiseLosses.toMap() }
+                val currentRecentPairs = synchronized(pairwiseLock) { recentPairs.toList() }
+                val currentRecentItemIds = synchronized(pairwiseLock) { recentItemIds.toList() }
+                val top100 = RecommendationEngine.getTop100PairwiseCandidates(
+                    repository = this@MediaRepository, 
+                    winsMap = currentWins, 
+                    lossesMap = currentLosses, 
+                    mediaTypeFilter = mediaTypeFilter.name,
+                    compareStrategy = _compareStrategy.value, 
+                    compareSort = _compareSort.value,
+                    inputItems = eligible
+                )
+                val discoveryState = getDiscoveryStateMemoized(items)
+                selectedPair = RecommendationEngine.selectNextPairFromPool(
+                    top100, 
+                    _comparisonCounts.value, 
+                    if (session.isActive) session.comparedPairIds else currentRecentPairs, 
+                    if (session.isActive) session.comparedPairIds.flatMap { listOf(it.first, it.second) } else currentRecentItemIds, 
+                    mediaTypeFilter.name, 
+                    _librarySessionSeed.value, 
+                    DiscoveryPolicyManager.resolveStrategy(_discoveryPolicy.value, _userIntent.value, RecommendationObjective.RANKING_REFINEMENT, discoveryState, _tasteDNA.value, _preferenceProfile.value), 
+                    _tasteDNA.value, 
+                    _creatorProfiles.value, 
+                    _compareStrategy.value
+                )
+            }
+
+            if (shouldAdvance && selectedPair != null) {
+                val next = selectedPair!!
+                val round = if (session.isActive) session.roundNumber else (if (isCurrentEmpty) 1 else _pairwiseState.value.roundNumber + 1)
                 _pairwiseState.value = PairwiseComparison("p$round", round, if (session.isActive) session.maxRounds else 50, next.first, next.second)
                 if (!session.isActive) { 
                     synchronized(pairwiseLock) {
@@ -531,9 +583,44 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
                     }
                 }
                 recordExposures(listOf(next.first.id, next.second.id))
-            } else if (session.isActive && !session.isComplete) {
+            } else if (shouldAdvance && session.isActive && !session.isComplete) {
                 _compareSelectionSession.update { it.copy(isComplete = true, completionReason = "All unique pairs exhausted.") }
                 _pairwiseState.value = PairwiseComparison("p_empty", _pairwiseState.value.roundNumber, 50, emptyMediaItem, emptyMediaItem)
+            }
+
+            // Asynchronously pre-fetch the next pair for the subsequent vote
+            try {
+                val currentWins = synchronized(pairwiseLock) { pairwiseWins.toMap() }
+                val currentLosses = synchronized(pairwiseLock) { pairwiseLosses.toMap() }
+                val currentRecentPairs = synchronized(pairwiseLock) { recentPairs.toList() }
+                val currentRecentItemIds = synchronized(pairwiseLock) { recentItemIds.toList() }
+                val top100 = RecommendationEngine.getTop100PairwiseCandidates(
+                    repository = this@MediaRepository, 
+                    winsMap = currentWins, 
+                    lossesMap = currentLosses, 
+                    mediaTypeFilter = mediaTypeFilter.name,
+                    compareStrategy = _compareStrategy.value, 
+                    compareSort = _compareSort.value,
+                    inputItems = eligible
+                )
+                val discoveryState = getDiscoveryStateMemoized(items)
+                val nextPair = RecommendationEngine.selectNextPairFromPool(
+                    top100, 
+                    _comparisonCounts.value, 
+                    if (session.isActive) session.comparedPairIds else currentRecentPairs, 
+                    if (session.isActive) session.comparedPairIds.flatMap { listOf(it.first, it.second) } else currentRecentItemIds, 
+                    mediaTypeFilter.name, 
+                    _librarySessionSeed.value + 1L, 
+                    DiscoveryPolicyManager.resolveStrategy(_discoveryPolicy.value, _userIntent.value, RecommendationObjective.RANKING_REFINEMENT, discoveryState, _tasteDNA.value, _preferenceProfile.value), 
+                    _tasteDNA.value, 
+                    _creatorProfiles.value, 
+                    _compareStrategy.value
+                )
+                if (nextPair != null && (nextPair.first.id != _pairwiseState.value.optionA.id || nextPair.second.id != _pairwiseState.value.optionB.id)) {
+                    preFetchedPair = nextPair
+                }
+            } catch (e: Exception) {
+                Log.w("MediaRepository", "Pre-fetch pair failed", e)
             }
         }
     }
@@ -659,11 +746,33 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
 
     suspend fun getMediaItemByIdAuthoritative(id: String) = database?.mediaDao()?.getMediaById(id)?.toMediaItem()
     
+    private var activeVisualSearchJob: Job? = null
+
     fun addVisualReference(item: MediaItem) { 
-        _activeVisualReferences.update { list -> (list + item).distinctBy { it.id } }
+        val newList = (_activeVisualReferences.value + item).distinctBy { it.id }
+        _activeVisualReferences.value = newList
+        triggerVisualSearchForReferences(newList)
     }
+
     fun removeVisualReference(id: String) {
-        _activeVisualReferences.update { list -> list.filterNot { it.id == id } }
+        val newList = _activeVisualReferences.value.filterNot { it.id == id }
+        _activeVisualReferences.value = newList
+        if (newList.isEmpty()) {
+            removeVisualAnchor()
+        } else {
+            triggerVisualSearchForReferences(newList)
+        }
+    }
+
+    private fun triggerVisualSearchForReferences(items: List<MediaItem>) {
+        activeVisualSearchJob?.cancel()
+        if (items.isEmpty()) {
+            removeVisualAnchor()
+            return
+        }
+        activeVisualSearchJob = scope.launch(Dispatchers.Default) {
+            searchByMultipleImagesInternal(items)
+        }
     }
     
     fun recordAISkipEvent(id: String, type: String, from: Long, to: Long) {
@@ -675,9 +784,9 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
     fun recordMicroMoment(id: String, taps: Int) { scope.launch { database?.microMomentDao()?.insertMoment(MicroMomentEntity(mediaId = id, tapCount = taps, timestamp = System.currentTimeMillis())) } }
     fun deleteComparisonMedia(id: String) { deleteMediaItem(id) }
     fun skipComparison() { 
-        if (_compareSelectionSession.value.isActive) {
-            val currentPair = _pairwiseState.value
-            if (currentPair.optionA.id.isNotEmpty() && currentPair.optionB.id.isNotEmpty()) {
+        val currentPair = _pairwiseState.value
+        if (currentPair.optionA.id.isNotEmpty() && currentPair.optionB.id.isNotEmpty()) {
+            if (_compareSelectionSession.value.isActive) {
                 _compareSelectionSession.update {
                     it.copy(
                         roundNumber = it.roundNumber + 1,
@@ -685,6 +794,13 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
                         comparedPairIds = it.comparedPairIds + (currentPair.optionA.id to currentPair.optionB.id)
                     )
                 }
+            }
+            synchronized(pairwiseLock) {
+                recentPairs.add(0, currentPair.optionA.id to currentPair.optionB.id)
+                if (recentPairs.size > 10) recentPairs.removeAt(10)
+                recentItemIds.add(0, currentPair.optionA.id)
+                recentItemIds.add(0, currentPair.optionB.id)
+                while (recentItemIds.size > 20) { recentItemIds.removeAt(recentItemIds.size - 1) }
             }
         }
         refreshPairwiseCandidatePoolAndSelectNext(true) 
@@ -779,13 +895,38 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
             return false
         }
         _scanProgress.value = ScanProgressState(isScanning = true, isManual = isManual)
-        val res = discoverLocalMedia(context)
-        if (res is DiscoveryResult.Complete) {
-            database?.mediaDao()?.insertAll(res.entities); _isLibraryReady.value = true
-            processPendingMedia(context, System.currentTimeMillis(), res.scannedVolumes, isManual)
+        try {
+            val res = discoverLocalMedia(context)
+            if (res is DiscoveryResult.Complete) {
+                database?.mediaDao()?.insertAll(res.entities)
+                _isLibraryReady.value = true
+                
+                // Complete scan progress immediately so newly discovered media appears instantly in UI
+                _scanProgress.value = ScanProgressState(
+                    isScanning = false,
+                    isComplete = true,
+                    isManual = isManual,
+                    discoveredCount = res.entities.size
+                )
+                
+                // Perform background intelligence/visual enrichment asynchronously (Discover -> Persist -> Display -> Enrich)
+                scope.launch(Dispatchers.Default) {
+                    processPendingMedia(context, System.currentTimeMillis(), res.scannedVolumes, isManual)
+                }
+            } else {
+                _scanProgress.value = ScanProgressState(isScanning = false, isComplete = true, isManual = isManual)
+            }
+            return true
+        } catch (e: Exception) {
+            _scanProgress.value = ScanProgressState(
+                isScanning = false,
+                isComplete = false,
+                isManual = isManual,
+                errorCode = ScanError.UNKNOWN_ERROR
+            )
+            if (e is CancellationException) throw e
+            return false
         }
-        _scanProgress.value = ScanProgressState(isScanning = false, isComplete = true, isManual = isManual)
-        return true
     }
     
     private suspend fun discoverLocalMedia(context: Context): DiscoveryResult {
@@ -859,8 +1000,13 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
     suspend fun convertMediaItem(context: Context, itemId: String, deleteOriginalAfter: Boolean = false, onProgress: ((Int) -> Unit)? = null): ConversionResult { val item = getMediaItemById(itemId) ?: return ConversionResult(false, null, null, "Not found"); return AuraMediaConverter.convertToUniversalFormat(context, item, deleteOriginalAfter, onProgress).also { if (it.isSuccess && it.updatedItem != null) { val updated = it.updatedItem!!; _mediaItems.update { list -> list.map { if (it.id == itemId) updated else it } }; database?.mediaDao()?.update(updated.toEntity()) } } }
     
     suspend fun getSimilarMedia(item: MediaItem, requestId: String = "NONE"): IntelligenceResponse {
-        val req = IntelligenceRequest(mode = IntelligenceMode.SIMILAR, referenceItemId = item.id, requestId = requestId, limit = 50)
-        return intelligenceCore?.processRequest(req) ?: IntelligenceResponse(requestId, IntelligenceMode.SIMILAR, emptyList(), latencyMs = 0, isSuccess = false, errorMessage = "Intelligence Core not initialized")
+        _isForegroundVisualQueryActive.value = true
+        return try {
+            val req = IntelligenceRequest(mode = IntelligenceMode.SIMILAR, referenceItemId = item.id, requestId = requestId, limit = 50)
+            intelligenceCore?.processRequest(req) ?: IntelligenceResponse(requestId, IntelligenceMode.SIMILAR, emptyList(), latencyMs = 0, isSuccess = false, errorMessage = "Intelligence Core not initialized")
+        } finally {
+            _isForegroundVisualQueryActive.value = false
+        }
     }
     
     fun recordSearch(query: String) { if (query.isBlank()) return; scope.launch(Dispatchers.IO) { database?.let { db -> db.searchHistoryDao().deleteSearchByQuery(query); db.searchHistoryDao().insertSearch(SearchHistoryEntity(query = query)) } } }
@@ -873,14 +1019,27 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
     fun searchByImage(bitmap: android.graphics.Bitmap, uri: String? = null) {
         val scaled = if (bitmap.width > 512 || bitmap.height > 512) android.graphics.Bitmap.createScaledBitmap(bitmap, 512, 512, true) else bitmap
         scope.launch(Dispatchers.Default) {
+            _isForegroundVisualQueryActive.value = true
             try {
-                mobileCLIPProvider?.let { provider ->
-                    if (provider.isReady()) {
-                        val result = provider.generateEmbedding("query_${UUID.randomUUID()}", SemanticInput.ExplicitBitmap(scaled), "query_image")
-                        if (result is EmbeddingResult.Success) _librarySearchRequest.value = SearchRequest.Visual(result.representation.vector, uri)
-                    }
+                if (_aiState.value != AIState.READY) {
+                    _aiState.first { it == AIState.READY || it == AIState.ERROR }
                 }
-            } catch (e: Exception) {} finally { if (scaled !== bitmap) scaled.recycle() }
+                val provider = mobileCLIPProvider
+                if (provider != null) {
+                    val result = provider.generateEmbedding("query_${UUID.randomUUID()}", SemanticInput.ExplicitBitmap(scaled), "query_image")
+                    if (result is EmbeddingResult.Success) {
+                        _librarySearchRequest.value = SearchRequest.Visual(result.representation.vector, uri)
+                    }
+                } else {
+                    Log.w("MediaRepository", "searchByImage: mobileCLIPProvider is null after AI initialization")
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.e("MediaRepository", "searchByImage error", e)
+            } finally {
+                _isForegroundVisualQueryActive.value = false
+                if (scaled !== bitmap) scaled.recycle()
+            }
         }
     }
     fun removeVisualAnchor() { _librarySearchRequest.value = SearchRequest.Text(_librarySearchRequest.value.query ?: "") }
@@ -935,6 +1094,7 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
     fun setCompareSort(sort: CompareSortOption) { _compareSort.value = sort; refreshPairwiseCandidatePoolAndSelectNext(true) }
     fun recordComparisonVote(chosenId: String) {
         val currentPair = _pairwiseState.value
+        Log.i("PAIRWISE_TRACE", "RECORD_COMPARISON_VOTE_START: chosenId=$chosenId optionA=${currentPair.optionA.id} optionB=${currentPair.optionB.id}")
         if (currentPair.optionA.id.isEmpty() || currentPair.optionB.id.isEmpty()) return
         
         if (_compareSelectionSession.value.isActive) {
@@ -942,12 +1102,36 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
                 losses = if (chosenId == currentPair.optionB.id) it.losses + 1 else it.losses, comparedPairIds = it.comparedPairIds + (currentPair.optionA.id to currentPair.optionB.id)) }
         }
         
-        scope.launch {
-            val db = database ?: return@launch
-            db.pairwiseDao().insertOutcome(PairwiseOutcomeEntity(optionAId = currentPair.optionA.id, optionBId = currentPair.optionB.id, chosenId = chosenId, roundNumber = currentPair.roundNumber))
+        val idA = currentPair.optionA.id
+        val idB = currentPair.optionB.id
+        _comparisonCounts.update { current ->
+            val cA = (current[idA] ?: 0) + 1
+            val cB = (current[idB] ?: 0) + 1
+            current + (idA to cA) + (idB to cB)
         }
         
-        val winner = if (chosenId == currentPair.optionA.id) currentPair.optionA else currentPair.optionB
+        synchronized(pairwiseLock) {
+            recentPairs.add(0, idA to idB)
+            if (recentPairs.size > 10) recentPairs.removeAt(10)
+            recentItemIds.add(0, idA)
+            recentItemIds.add(0, idB)
+            while (recentItemIds.size > 20) { recentItemIds.removeAt(recentItemIds.size - 1) }
+            
+            if (chosenId == idA) {
+                pairwiseWins[idA] = (pairwiseWins[idA] ?: 0) + 1
+                pairwiseLosses[idB] = (pairwiseLosses[idB] ?: 0) + 1
+            } else {
+                pairwiseWins[idB] = (pairwiseWins[idB] ?: 0) + 1
+                pairwiseLosses[idA] = (pairwiseLosses[idA] ?: 0) + 1
+            }
+        }
+
+        scope.launch {
+            val db = database ?: return@launch
+            db.pairwiseDao().insertOutcome(PairwiseOutcomeEntity(optionAId = idA, optionBId = idB, chosenId = chosenId, roundNumber = currentPair.roundNumber))
+        }
+        
+        val winner = if (chosenId == idA) currentPair.optionA else currentPair.optionB
         if (_tasteDNA.value.isFineTuningEnabled) {
             val winTraits = PersonalizationTraitMapper.getEffectiveTraitAdjustments(winner)
             var dna = _tasteDNA.value
@@ -1005,7 +1189,67 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
     fun recordCompareSelectionVote(chosenId: String) = recordComparisonVote(chosenId)
     fun skipCompareSelectionPair() = skipComparison()
 
-    fun searchByMultipleImages(items: List<MediaItem>) { /* Logic */ }
+    fun searchByMultipleImages(items: List<MediaItem>) {
+        if (items.isEmpty()) {
+            clearSearch()
+            return
+        }
+        val references = items.distinctBy { it.id }
+        _activeVisualReferences.value = references
+        triggerVisualSearchForReferences(references)
+    }
+
+    private suspend fun searchByMultipleImagesInternal(items: List<MediaItem>) {
+        if (items.isEmpty()) {
+            clearSearch()
+            return
+        }
+        val ctx = applicationContext ?: return
+        _isForegroundVisualQueryActive.value = true
+        try {
+            if (_aiState.value != AIState.READY) {
+                _aiState.first { it == AIState.READY || it == AIState.ERROR }
+            }
+            val vectors = mutableListOf<FloatArray>()
+            val uris = mutableListOf<String>()
+            items.forEach { item ->
+                val uri = item.uriPath.ifEmpty { item.imageUrl }
+                if (uri.isNotEmpty()) {
+                    uris.add(uri)
+                }
+                val repo = semanticRepresentationRepository
+                val provider = mobileCLIPProvider
+                val existing = repo?.getForMedia(item.id)?.firstOrNull { it.type == SemanticRepresentationType.VISUAL }
+                if (existing != null) {
+                    vectors.add(existing.vector)
+                } else if (uri.isNotEmpty()) {
+                    val bitmap = com.example.util.MediaThumbnailFetcher.getThumbnail(ctx, uri)
+                    if (bitmap != null) {
+                        val scaled = if (bitmap.width > 512 || bitmap.height > 512) android.graphics.Bitmap.createScaledBitmap(bitmap, 512, 512, true) else bitmap
+                        if (provider != null && provider.isReady()) {
+                            val result = provider.generateEmbedding(item.id, SemanticInput.ExplicitBitmap(scaled), "query_image")
+                            if (result is EmbeddingResult.Success) {
+                                vectors.add(result.representation.vector)
+                            }
+                        }
+                        if (scaled !== bitmap) scaled.recycle()
+                    }
+                }
+            }
+            if (vectors.isNotEmpty()) {
+                if (vectors.size == 1) {
+                    _librarySearchRequest.value = SearchRequest.Visual(vectors[0], uris.firstOrNull())
+                } else {
+                    _librarySearchRequest.value = SearchRequest.MultiVisual(vectors, uris)
+                }
+            }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.e("MediaRepository", "Error in searchByMultipleImagesInternal", e)
+        } finally {
+            _isForegroundVisualQueryActive.value = false
+        }
+    }
     private fun extractVolumeFromUri(uriString: String): String? {
         return try {
             val uri = android.net.Uri.parse(uriString)

@@ -51,19 +51,30 @@ class PlaybackDiagnosticsViewModel(
         ) ?: MutableStateFlow(emptyList())
 
     /**
-     * Derived summary of conversion eligibility across all recorded errors.
+     * Derived summary of conversion eligibility across all recorded errors and conversion queue.
      */
-    val eligibilitySummary: StateFlow<ConversionEligibilitySummary> = errorLogs
-        .map { logs ->
-            analyzeEligibility(logs)
-        }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = ConversionEligibilitySummary(0, 0, 0, 0, 0, emptyList())
-        )
+    val eligibilitySummary: StateFlow<ConversionEligibilitySummary> = combine(errorLogs, conversionQueue) { logs, queue ->
+        analyzeEligibility(logs, queue)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = ConversionEligibilitySummary(0, 0, 0, 0, 0, emptyList())
+    )
 
-    private fun analyzeEligibility(logs: List<PlaybackErrorLogEntity>): ConversionEligibilitySummary {
+    private fun analyzeEligibility(
+        logs: List<PlaybackErrorLogEntity>,
+        queue: List<ConversionJobEntity>
+    ): ConversionEligibilitySummary {
+        // Collect media IDs or URIs that have active or completed conversions
+        val remediatedMediaIds = queue.filter { job ->
+            job.status == ConversionJobStatus.COMPLETED.name ||
+            job.status == ConversionJobStatus.READY_FOR_ORIGINAL_CLEANUP.name ||
+            job.status == ConversionJobStatus.CLEANUP_COMPLETED.name ||
+            job.status == ConversionJobStatus.REPLACING.name
+        }.flatMap { job ->
+            listOfNotNull(job.mediaId, job.sourceUri, job.finalMediaUri)
+        }.toSet()
+
         // Group errors by mediaItemId (falling back to mediaUri if ID is null)
         val groups = logs.groupBy { it.mediaItemId ?: it.mediaUri ?: "unknown" }
         
@@ -74,6 +85,7 @@ class PlaybackDiagnosticsViewModel(
             val latestEntry = entries.first()
             val uri = latestEntry.mediaUri ?: return@mapNotNull null
             
+            val isRemediated = remediatedMediaIds.contains(id) || remediatedMediaIds.contains(uri)
             val recommendation = AuraConversionAdvisor.createRecommendation(latestEntry)
             
             ConversionCandidate(
@@ -83,16 +95,19 @@ class PlaybackDiagnosticsViewModel(
                 mediaTitle = latestEntry.mediaTitle,
                 recommendation = recommendation,
                 failureCount = entries.sumOf { it.occurrenceCount },
-                lastFailureTimestamp = entries.maxOf { it.lastOccurrenceTimestamp }
+                lastFailureTimestamp = entries.maxOf { it.lastOccurrenceTimestamp },
+                isRemediated = isRemediated
             )
         }
 
+        val activeCandidates = candidates.filter { !it.isRemediated }
+
         return ConversionEligibilitySummary(
             totalErrors = logs.sumOf { it.occurrenceCount },
-            uniqueFiles = candidates.size,
-            convertibleCount = candidates.count { it.recommendation.eligibility == ConversionEligibility.CONVERTIBLE },
-            notRecommendedCount = candidates.count { it.recommendation.eligibility == ConversionEligibility.NOT_RECOMMENDED },
-            unavailableCount = candidates.count { it.recommendation.eligibility == ConversionEligibility.UNAVAILABLE },
+            uniqueFiles = activeCandidates.size,
+            convertibleCount = activeCandidates.count { it.recommendation.eligibility == ConversionEligibility.CONVERTIBLE },
+            notRecommendedCount = activeCandidates.count { it.recommendation.eligibility == ConversionEligibility.NOT_RECOMMENDED },
+            unavailableCount = activeCandidates.count { it.recommendation.eligibility == ConversionEligibility.UNAVAILABLE },
             candidates = candidates.sortedByDescending { it.lastFailureTimestamp }
         )
     }

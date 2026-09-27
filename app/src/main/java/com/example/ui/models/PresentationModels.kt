@@ -219,6 +219,7 @@ data class HandoffSeal(
  */
 data class TraceEvent(
     val timestamp: Long = System.currentTimeMillis(),
+    val sequenceNumber: Long = 0L,
     val type: TraceEventType,
     val detail: String = "",
     val metadata: Map<String, String> = emptyMap()

@@ -51,9 +51,8 @@ class PairwiseCoverageTest {
         // 2. Refresh pool
         val pool = RecommendationEngine.getTop100PairwiseCandidates(repository)
 
-        // 3. Verify pool size is > 100
-        assertTrue("Pool size should be > 100. Got: ${pool.size}", pool.size > 100)
-        assertEquals(150, pool.size)
+        // 3. Verify pool size is bounded to 100
+        assertEquals(100, pool.size)
     }
 
     @Test

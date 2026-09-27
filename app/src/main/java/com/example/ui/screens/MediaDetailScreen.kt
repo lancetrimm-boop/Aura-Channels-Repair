@@ -11,6 +11,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
+import kotlinx.coroutines.CancellationException
 import android.view.WindowManager
 import android.app.Activity
 import androidx.media3.common.PlaybackException
@@ -192,11 +193,8 @@ fun MediaDetailScreen(
     var showSpeedMenu by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
 
-    // Use internal tracking for the current item to ensure it stays in sync with ExoPlayer's playlist
-    // Task 3: Keyed by playlistState to ensure index resets when a new playlist (like See Similar) is established.
-    var currentItemIndex by rememberSaveable(playlistState?.authoritativeMediaId) { 
-        mutableIntStateOf(playlistState?.currentIndex ?: 0) 
-    }
+    // Authoritative index directly derived from playlistState to ensure 100% synchronization with MediaRepository and Media3
+    val currentItemIndex = playlistState?.currentIndex ?: 0
     
     val activeItem = remember(currentItemIndex, playlistState) {
         playlistState?.items?.getOrNull(currentItemIndex) ?: item
@@ -340,7 +338,6 @@ fun MediaDetailScreen(
                     }
 
                     if (originalIndex != -1) {
-                        currentItemIndex = originalIndex
                         // Update repository for global state consistency
                         onSelectIndex?.invoke(originalIndex)
                     }
@@ -779,18 +776,25 @@ fun MediaDetailScreen(
                                             isConverting = true
                                             conversionErrorMsg = null
                                             coroutineScope.launch {
-                                                val res = MediaRepository.getInstance(context).convertMediaItem(
-                                                    context = context,
-                                                    itemId = activeItem.id,
-                                                    deleteOriginalAfter = deleteOriginalAfter,
-                                                    onProgress = { p -> conversionProgress = p }
-                                                )
-                                                isConverting = false
-                                                if (!res.isSuccess) {
-                                                    conversionErrorMsg = res.errorMessage ?: "Conversion failed"
+                                                try {
+                                                    val res = MediaRepository.getInstance(context).convertMediaItem(
+                                                        context = context,
+                                                        itemId = activeItem.id,
+                                                        deleteOriginalAfter = deleteOriginalAfter,
+                                                        onProgress = { p -> conversionProgress = p }
+                                                    )
+                                                    if (!res.isSuccess) {
+                                                        conversionErrorMsg = res.errorMessage ?: "Conversion failed"
+                                                        Toast.makeText(context, conversionErrorMsg, Toast.LENGTH_LONG).show()
+                                                    } else {
+                                                        Toast.makeText(context, "Conversion complete! Playing media...", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                } catch (e: Exception) {
+                                                    if (e is CancellationException) throw e
+                                                    conversionErrorMsg = e.message ?: "Conversion error"
                                                     Toast.makeText(context, conversionErrorMsg, Toast.LENGTH_LONG).show()
-                                                } else {
-                                                    Toast.makeText(context, "Conversion complete! Playing media...", Toast.LENGTH_SHORT).show()
+                                                } finally {
+                                                    isConverting = false
                                                 }
                                             }
                                         },
@@ -1159,20 +1163,28 @@ fun MediaDetailScreen(
                 isConverting = true
                 conversionErrorMsg = null
                 coroutineScope.launch {
-                    val res = repository.convertMediaItem(
-                        context = context,
-                        itemId = activeItem.id,
-                        deleteOriginalAfter = deleteOriginalAfter,
-                        onProgress = { p -> conversionProgress = p }
-                    )
-                    isConverting = false
-                    if (!res.isSuccess) {
+                    try {
+                        val res = repository.convertMediaItem(
+                            context = context,
+                            itemId = activeItem.id,
+                            deleteOriginalAfter = deleteOriginalAfter,
+                            onProgress = { p -> conversionProgress = p }
+                        )
+                        if (!res.isSuccess) {
+                            recordRecovery(attempted = true, successful = false)
+                            conversionErrorMsg = res.errorMessage ?: "Conversion failed"
+                            Toast.makeText(context, conversionErrorMsg, Toast.LENGTH_LONG).show()
+                        } else {
+                            recordRecovery(attempted = true, successful = true)
+                            Toast.makeText(context, "Conversion complete! Playing media...", Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         recordRecovery(attempted = true, successful = false)
-                        conversionErrorMsg = res.errorMessage ?: "Conversion failed"
+                        conversionErrorMsg = e.message ?: "Conversion error"
                         Toast.makeText(context, conversionErrorMsg, Toast.LENGTH_LONG).show()
-                    } else {
-                        recordRecovery(attempted = true, successful = true)
-                        Toast.makeText(context, "Conversion complete! Playing media...", Toast.LENGTH_SHORT).show()
+                    } finally {
+                        isConverting = false
                     }
                 }
             },

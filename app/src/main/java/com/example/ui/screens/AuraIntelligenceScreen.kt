@@ -29,7 +29,6 @@ enum class IntelligenceSection(val title: String, val isDeveloperOnly: Boolean =
     DECISIONS("Decisions"),
     EXECUTION("Execution"),
     REPORTS("Analysis"),
-    SOCIAL_DISCOVERY("Social POC", isDeveloperOnly = true),
     DEBUGGER("Debugger", isDeveloperOnly = true),
     WORKSPACE("Blueprint", isDeveloperOnly = true),
     HISTORY("History")
@@ -162,11 +161,6 @@ fun AuraIntelligenceScreen(
                         onNavigateToWorkspace = { /* */ },
                         onNavigateToImprovement = onNavigateToImprovement,
                         onNavigateToFinding = onNavigateToFinding
-                    )
-                }
-                IntelligenceSection.SOCIAL_DISCOVERY -> {
-                    UniversalSocialDiscoveryScreen(
-                        repository = repository
                     )
                 }
                 IntelligenceSection.DEBUGGER -> {

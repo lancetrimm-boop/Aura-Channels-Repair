@@ -39,6 +39,8 @@ class DefaultVisualIndexingService(
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : VisualIndexingService {
 
+    private val inFlightJobs = java.util.concurrent.ConcurrentHashMap<String, Deferred<EmbeddingResult>>()
+
     companion object {
         /**
          * Version for visual indexing strategy. 
@@ -61,7 +63,40 @@ class DefaultVisualIndexingService(
     }
 
     override suspend fun indexVisual(context: Context, item: MediaItem): EmbeddingResult = withContext(dispatcher) {
+        val mediaId = item.id
+        val newDeferred = CompletableDeferred<EmbeddingResult>()
+        val existing = inFlightJobs.putIfAbsent(mediaId, newDeferred)
+
+        if (existing != null) {
+            return@withContext try {
+                existing.await()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                EmbeddingResult.Failure(
+                    EmbeddingErrorCode.INFERENCE_ERROR,
+                    e.message ?: "Execution failed"
+                )
+            }
+        }
+
         try {
+            val result = executeIndexVisualInternal(context, item)
+            newDeferred.complete(result)
+            result
+        } catch (e: Throwable) {
+            newDeferred.completeExceptionally(e)
+            if (e is CancellationException) throw e
+            EmbeddingResult.Failure(
+                EmbeddingErrorCode.INFERENCE_ERROR,
+                e.message ?: "Execution failed"
+            )
+        } finally {
+            inFlightJobs.remove(mediaId, newDeferred)
+        }
+    }
+
+    private suspend fun executeIndexVisualInternal(context: Context, item: MediaItem): EmbeddingResult {
+        return try {
             val descriptor = visualProvider.descriptor
             val isVideo = item.mediaType == "VIDEO" || item.mediaType == "Movie"
             val targetVersion = if (isVideo) VISUAL_INDEX_VERSION else IMAGE_INDEX_VERSION
@@ -84,7 +119,7 @@ class DefaultVisualIndexingService(
                 
                 Log.i("VisualIndexing", "INDEX_REUSE: mediaId=${item.id}")
                 candidateRetriever.onRepresentationAdded(existing)
-                return@withContext EmbeddingResult.Success(existing)
+                return EmbeddingResult.Success(existing)
             }
 
             // 3. Extraction & Embedding Generation
@@ -110,6 +145,7 @@ class DefaultVisualIndexingService(
                 )
             }
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Log.e("VisualIndexing", "INDEX_ERROR: mediaId=${item.id} error=${e.message}", e)
             EmbeddingResult.Failure(
                 errorCode = EmbeddingErrorCode.INFERENCE_ERROR,

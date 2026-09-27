@@ -93,16 +93,26 @@ class VisualSearchAccumulationTest {
     fun testMultiImageSearch_Accumulation() = runTest(testDispatcher) {
         val item1 = MediaItem(id = "item1", title = "T1", mediaType = "PHOTO", uriPath = "u1")
         val item2 = MediaItem(id = "item2", title = "T2", mediaType = "PHOTO", uriPath = "u2")
-        val item3 = MediaItem(id = "item3", title = "T3", mediaType = "PHOTO", uriPath = "u3")
 
-        // 1. Initial search with item1
-        repository.addVisualReference(item1)
-        assertEquals(listOf(item1), repository.activeVisualReferences.value)
+        // 1. Search with multiple items (item1, item2)
+        repository.searchByMultipleImages(listOf(item1, item2))
+        assertEquals(2, repository.activeVisualReferences.value.size)
+        assertEquals(listOf(item1, item2), repository.activeVisualReferences.value)
+    }
 
-        // 2. Accumulate multiple items (item2, item3)
-        repository.searchByMultipleImages(listOf(item2, item3))
-        assertEquals(3, repository.activeVisualReferences.value.size)
-        assertEquals(listOf(item1, item2, item3), repository.activeVisualReferences.value)
+    @Test
+    fun testSearchByMultipleImages_DeduplicatesAndClears() = runTest(testDispatcher) {
+        val itemA = MediaItem(id = "A", title = "A", mediaType = "PHOTO", uriPath = "uA")
+        val itemB = MediaItem(id = "B", title = "B", mediaType = "PHOTO", uriPath = "uB")
+
+        // 1. Deduplicates duplicates
+        repository.searchByMultipleImages(listOf(itemA, itemA, itemB))
+        assertEquals(2, repository.activeVisualReferences.value.size)
+        assertEquals(listOf(itemA, itemB), repository.activeVisualReferences.value)
+
+        // 2. Empty input clears active references
+        repository.searchByMultipleImages(emptyList())
+        assertEquals(0, repository.activeVisualReferences.value.size)
     }
 
     @Test

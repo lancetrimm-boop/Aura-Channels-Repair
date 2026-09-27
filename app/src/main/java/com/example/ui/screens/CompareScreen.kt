@@ -448,69 +448,68 @@ fun CompareScreen(
                         horizontalArrangement = Arrangement.spacedBy(AuraSpacing.XS),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Surface(
+                        Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .height(40.dp)
-                                .clip(RoundedCornerShape(20.dp))
-                                .clickable { onVote(pairwiseState.optionA.id) }
+                                .height(44.dp)
+                                .clickable { 
+                                    android.util.Log.i("PAIRWISE_TRACE", "PAIRWISE_UI_VOTE_LEFT: ${pairwiseState.optionA.id}")
+                                    onVote(pairwiseState.optionA.id) 
+                                }
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(DiscoveryGradient)
                                 .testTag("prefer_left_button"),
-                            color = Color.Transparent,
-                            contentColor = Color.White
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(
-                                modifier = Modifier.background(DiscoveryGradient),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "PREFER LEFT",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Black
-                                )
-                            }
+                            Text(
+                                text = "PREFER LEFT",
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black
+                            )
                         }
 
-                        Surface(
+                        Box(
                             modifier = Modifier
                                 .weight(0.7f)
-                                .height(40.dp)
-                                .clip(RoundedCornerShape(20.dp))
-                                .border(1.dp, AuraSubtleBorder, RoundedCornerShape(20.dp))
-                                .clickable { onSkip() }
+                                .height(44.dp)
+                                .clickable { 
+                                    android.util.Log.i("PAIRWISE_TRACE", "PAIRWISE_UI_SKIP: ${pairwiseState.optionA.id} vs ${pairwiseState.optionB.id}")
+                                    onSkip() 
+                                }
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(AuraCrispWhite)
+                                .border(1.dp, AuraSubtleBorder, RoundedCornerShape(22.dp))
                                 .testTag("skip_button"),
-                            color = AuraCrispWhite,
-                            contentColor = AuraMidnight
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = "SKIP",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Black,
-                                    color = AuraMutedSlate
-                                )
-                            }
+                            Text(
+                                text = "SKIP",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                color = AuraMutedSlate
+                            )
                         }
 
-                        Surface(
+                        Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .height(40.dp)
-                                .clip(RoundedCornerShape(20.dp))
-                                .clickable { onVote(pairwiseState.optionB.id) }
+                                .height(44.dp)
+                                .clickable { 
+                                    android.util.Log.i("PAIRWISE_TRACE", "PAIRWISE_UI_VOTE_RIGHT: ${pairwiseState.optionB.id}")
+                                    onVote(pairwiseState.optionB.id) 
+                                }
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(DiscoveryGradient)
                                 .testTag("prefer_right_button"),
-                            color = Color.Transparent,
-                            contentColor = Color.White
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(
-                                modifier = Modifier.background(DiscoveryGradient),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "PREFER RIGHT",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Black
-                                )
-                            }
+                            Text(
+                                text = "PREFER RIGHT",
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black
+                            )
                         }
                     }
                 }

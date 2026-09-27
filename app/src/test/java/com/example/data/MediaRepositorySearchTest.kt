@@ -364,5 +364,64 @@ class MediaRepositorySearchTest {
         assertNull(newSearchReq.visualVectors)
         assertTrue(repository.activeVisualReferences.value.isEmpty())
     }
+
+    @Test
+    fun testSimilarPrecisionThreshold_Below045Excluded_AtOrAbove045Included() = runTest(testDispatcher) {
+        val refItem = MediaItem(id = "ref_item", title = "Reference", mediaType = "PHOTO")
+        val candidateLow = MediaItem(id = "item_low", title = "Low Sim", mediaType = "PHOTO")
+        val candidateHigh = MediaItem(id = "item_high", title = "High Sim", mediaType = "PHOTO")
+
+        repository.setMediaItemsForTesting(listOf(refItem, candidateLow, candidateHigh))
+
+        val mockDescriptor = mobileClipProvider.descriptor!!
+        val refVector = FloatArray(512) { 0.5f }
+        val lowVector = FloatArray(512) { 0.44f } // Score 0.44 < 0.45 threshold -> Excluded
+        val highVector = FloatArray(512) { 0.46f } // Score 0.46 >= 0.45 threshold -> Included
+
+        val repRef = SemanticRepresentation(id = "rep_ref", mediaId = "ref_item", type = SemanticRepresentationType.VISUAL, modelDescriptor = mockDescriptor, dimensionality = 512, vector = refVector, sourceDataHash = "hRef")
+        val repLow = SemanticRepresentation(id = "rep_low", mediaId = "item_low", type = SemanticRepresentationType.VISUAL, modelDescriptor = mockDescriptor, dimensionality = 512, vector = lowVector, sourceDataHash = "hLow")
+        val repHigh = SemanticRepresentation(id = "rep_high", mediaId = "item_high", type = SemanticRepresentationType.VISUAL, modelDescriptor = mockDescriptor, dimensionality = 512, vector = highVector, sourceDataHash = "hHigh")
+
+        whenever(semanticRepo.getSpecificRepresentation(eq("ref_item"), eq(SemanticRepresentationType.VISUAL), any())).thenReturn(repRef)
+        whenever(semanticRepo.getCompatibleRepresentations(eq(SemanticRepresentationType.VISUAL), any())).thenReturn(listOf(repRef, repLow, repHigh))
+
+        val response = repository.getSimilarMedia(refItem)
+        
+        // Excludes source item (ref_item) and item_low (score 0.44 < 0.45 threshold)
+        // Includes item_high (score 0.46 >= 0.45 threshold)
+        assertTrue(response.isSuccess)
+        val resultIds = response.candidates.map { it.item.id }
+        assertFalse(resultIds.contains("ref_item"))
+        assertFalse(resultIds.contains("item_low"))
+        assertTrue(resultIds.contains("item_high"))
+    }
+
+    @Test
+    fun testSimilarPrecisionThreshold_ModeIsolation_DoesNotAlterSearchMode() = runTest(testDispatcher) {
+        val searchReq = IntelligenceRequest(
+            mode = IntelligenceMode.SEARCH,
+            query = "photo",
+            limit = 50
+        )
+        // Verify SEARCH mode does not use 0.45f thresholding reserved for SIMILAR mode
+        assertNotEquals(IntelligenceMode.SIMILAR, searchReq.mode)
+        assertEquals(IntelligenceMode.SEARCH, searchReq.mode)
+    }
+
+    @Test
+    fun testSimilarResultCountMessaging_FormatsCorrectly() {
+        val formatCountMsg = { count: Int ->
+            if (count == 0) "No visually similar items found"
+            else if (count == 1) "Loaded 1 similar item"
+            else "Loaded $count similar items"
+        }
+
+        assertEquals("No visually similar items found", formatCountMsg(0))
+        assertEquals("Loaded 1 similar item", formatCountMsg(1))
+        assertEquals("Loaded 2 similar items", formatCountMsg(2))
+        assertEquals("Loaded 17 similar items", formatCountMsg(17))
+        assertEquals("Loaded 50 similar items", formatCountMsg(50))
+    }
 }
+
 

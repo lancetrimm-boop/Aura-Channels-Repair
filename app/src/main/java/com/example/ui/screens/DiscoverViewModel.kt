@@ -190,6 +190,7 @@ class DiscoverViewModel(
                     _feedState.value = DiscoverFeedState.Success(snapshot, reveal)
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _feedState.value = DiscoverFeedState.Error(e.message ?: "Failed to generate recommendations")
             } finally {
                 isRefreshing = false
