@@ -32,6 +32,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -155,6 +157,7 @@ fun LibraryScreen(
         onClearSearch = { repository.clearSearch() },
         onSearchByImage = { bitmap, uri -> repository.searchByImage(bitmap, uri) },
         onSearchByMultipleImages = { items -> repository.searchByMultipleImages(items) },
+        onSaveSearchAsChannel = { channel -> scope.launch { repository.saveSearchSeededChannel(channel) } },
         onTriggerScan = {
             scope.launch {
                 onScanDevice?.invoke()
@@ -199,6 +202,7 @@ fun LibraryContent(
     onClearSearch: () -> Unit,
     onSearchByImage: (Bitmap, String) -> Unit,
     onSearchByMultipleImages: (List<MediaItem>) -> Unit,
+    onSaveSearchAsChannel: (Channel) -> Unit = {},
     deletionStateFlow: kotlinx.coroutines.flow.StateFlow<com.example.data.cleanup.DeletionState>,
     libraryScrollIndex: Int,
     libraryScrollOffset: Int,
@@ -433,25 +437,77 @@ fun LibraryContent(
                     }
                 )
             } else if (isSearchActive) {
-                SearchHeader(
-                    activeReferences = state.activeVisualReferences,
-                    textFieldValue = searchFieldValue,
-                    onQueryChange = { 
-                        searchFieldValue = it
-                        onSearchQueryChange(it.text)
-                    },
-                    onImageSearchClick = {
-                        visualSearchLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
-                    onRemoveReference = {
-                        onRemoveVisualReference(it)
-                    },
-                    onExit = { 
-                        isSearchActive = false
-                        searchFieldValue = TextFieldValue("")
-                        onClearSearch()
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    SearchHeader(
+                        activeReferences = state.activeVisualReferences,
+                        textFieldValue = searchFieldValue,
+                        onQueryChange = { 
+                            searchFieldValue = it
+                            onSearchQueryChange(it.text)
+                        },
+                        onImageSearchClick = {
+                            visualSearchLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                        onRemoveReference = {
+                            onRemoveVisualReference(it)
+                        },
+                        onExit = { 
+                            isSearchActive = false
+                            searchFieldValue = TextFieldValue("")
+                            onClearSearch()
+                        }
+                    )
+                    if (searchFieldValue.text.isNotBlank() || state.activeVisualReferences.isNotEmpty()) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = AuraSpacing.S, vertical = AuraSpacing.XXS),
+                            color = AuraCrispWhite,
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, AuraSubtleBorder)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = AuraSpacing.M, vertical = AuraSpacing.S),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Turn this search into a channel",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = AuraMidnight,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Button(
+                                    onClick = {
+                                        val title = searchFieldValue.text.ifBlank {
+                                            if (state.activeVisualReferences.isNotEmpty()) "Visual Search" else "Search Channel"
+                                        }
+                                        val channel = com.example.data.Channel(
+                                            id = "channel_search_${System.currentTimeMillis()}",
+                                            title = title,
+                                            query = searchFieldValue.text,
+                                            referenceMediaIds = state.activeVisualReferences.map { it.id },
+                                            channelKind = com.example.data.ChannelKind.SEARCH_SEEDED,
+                                            strategyId = "SEARCH_SEEDED",
+                                            isProGated = true
+                                        )
+                                        onSaveSearchAsChannel(channel)
+                                        android.widget.Toast.makeText(context, "Saved as Channel: $title", android.widget.Toast.LENGTH_SHORT).show()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = DiscoveryViolet),
+                                    contentPadding = PaddingValues(horizontal = AuraSpacing.M, vertical = 4.dp),
+                                    modifier = Modifier.semantics { contentDescription = "Make this search a channel" }
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Make Channel", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
                     }
-                )
+                }
             } else {
             if (!isLandscape) {
                 Row(

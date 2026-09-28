@@ -131,6 +131,25 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
 
     private val _mediaItems = MutableStateFlow<List<MediaItem>>(emptyList()); val mediaItems = _mediaItems.asStateFlow()
     val mediaItemsMap = _mediaItems.map { list -> list.associateBy { it.id } }.stateIn(scope, SharingStarted.Eagerly, emptyMap())
+    private val _searchSeededChannels = MutableStateFlow<List<Channel>>(emptyList())
+    val searchSeededChannels: StateFlow<List<Channel>> = _searchSeededChannels.asStateFlow()
+
+    suspend fun saveSearchSeededChannel(channel: Channel) {
+        val current = _searchSeededChannels.value.toMutableList()
+        if (current.none { it.id == channel.id }) {
+            current.add(channel)
+            _searchSeededChannels.value = current
+            ChannelRegistry.addSearchSeededChannel(channel)
+            try {
+                val adapter = moshi.adapter<List<Channel>>(
+                    com.squareup.moshi.Types.newParameterizedType(List::class.java, Channel::class.java)
+                )
+                database?.userPreferenceDao()?.insertPreference(
+                    UserPreferenceEntity("search_seeded_channels", adapter.toJson(current))
+                )
+            } catch (e: Exception) {}
+        }
+    }
     private val _databaseState = MutableStateFlow(DatabaseState.NOT_INITIALIZED); val databaseState = _databaseState.asStateFlow()
     private val _aiState = MutableStateFlow(AIState.NOT_INITIALIZED); val aiState = _aiState.asStateFlow()
     private val _initializationDetail = MutableStateFlow("Pending..."); val initializationDetail = _initializationDetail.asStateFlow()
@@ -210,6 +229,23 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
 
     private val _libraryRepeatMode = MutableStateFlow(false); val libraryRepeatMode = _libraryRepeatMode.asStateFlow()
     var repeatMode: Boolean get() = _libraryRepeatMode.value; set(v) { _libraryRepeatMode.value = v }
+
+    private val _slideshowDelaySeconds = MutableStateFlow(4)
+    val slideshowDelaySeconds: StateFlow<Int> = _slideshowDelaySeconds.asStateFlow()
+
+    var slideshowDelaySec: Int
+        get() = _slideshowDelaySeconds.value
+        set(value) {
+            val clamped = value.coerceIn(1, 10)
+            _slideshowDelaySeconds.value = clamped
+            scope.launch {
+                try {
+                    database?.userPreferenceDao()?.insertPreference(
+                        UserPreferenceEntity("slideshow_delay_seconds", clamped.toString())
+                    )
+                } catch (_: Exception) {}
+            }
+        }
 
     companion object { 
         val instance = MediaRepository()
@@ -348,8 +384,8 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
                     db.mediaDao().getWatchHistory().collect { _watchHistory.value = it.map { it.toMediaItem() } }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: IllegalStateException) {
-                    if (!isDatabaseClosedException(e)) throw e
+                } catch (e: Exception) {
+                    // Safe catch
                 }
             }
             launch {
@@ -357,8 +393,8 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
                     db.searchHistoryDao().getRecentSearches().collect { _recentSearches.value = it.map { it.query } }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: IllegalStateException) {
-                    if (!isDatabaseClosedException(e)) throw e
+                } catch (e: Exception) {
+                    // Safe catch
                 }
             }
             launch {
@@ -366,8 +402,8 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
                     db.pairwiseDao().getAllOutcomes().collect { outcomes -> val counts = mutableMapOf<String, Int>(); outcomes.forEach { counts[it.optionAId] = (counts[it.optionAId] ?: 0) + 1; counts[it.optionBId] = (counts[it.optionBId] ?: 0) + 1 }; _comparisonCounts.value = counts }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: IllegalStateException) {
-                    if (!isDatabaseClosedException(e)) throw e
+                } catch (e: Exception) {
+                    // Safe catch
                 }
             }
             launch {
@@ -378,6 +414,22 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
                     db.userPreferenceDao().getPreference("taste_dna")?.value?.let { try { tasteDnaAdapter.fromJson(it)?.let { _tasteDNA.value = it.sanitize() } } catch (e: Exception) {} }
                     db.userPreferenceDao().getPreference("preference_profile")?.value?.let { try { profileAdapter.fromJson(it)?.let { _preferenceProfile.value = it.sanitize() } } catch (e: Exception) {} }
                     db.userPreferenceDao().getPreference("discovery_policy")?.value?.let { try { discoveryPolicyAdapter.fromJson(it)?.let { _discoveryPolicy.value = it } } catch (e: Exception) {} }
+                    db.userPreferenceDao().getPreference("slideshow_delay_seconds")?.value?.let { str ->
+                        str.toIntOrNull()?.let { delayVal ->
+                            _slideshowDelaySeconds.value = delayVal.coerceIn(1, 10)
+                        }
+                    }
+                    db.userPreferenceDao().getPreference("search_seeded_channels")?.value?.let { json ->
+                        try {
+                            val channelListAdapter = moshi.adapter<List<Channel>>(
+                                com.squareup.moshi.Types.newParameterizedType(List::class.java, Channel::class.java)
+                            )
+                            channelListAdapter.fromJson(json)?.let { loaded ->
+                                _searchSeededChannels.value = loaded
+                                loaded.forEach { ChannelRegistry.addSearchSeededChannel(it) }
+                            }
+                        } catch (e: Exception) {}
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: IllegalStateException) {
@@ -636,6 +688,24 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
         
         val idx = items.getOrNull(initialIndex)?.let { orig -> sanitized.indexOfFirst { it.id == orig.id }.let { if (it != -1) it else 0 } } ?: 0
         _activePlaylist.value = PlaylistState(sanitized, idx, sanitized.getOrNull(idx)?.id, sourceTitle)
+    }
+
+    fun extendActivePlaylist(newItems: List<MediaItem>) {
+        val current = _activePlaylist.value ?: return
+        if (newItems.isEmpty()) return
+        val visible = listOf(
+            CompatibilityStatus.PLAYABLE,
+            CompatibilityStatus.PLAYABLE_SOFTWARE_DECODE,
+            CompatibilityStatus.PLAYABLE_AFTER_CONVERSION,
+            CompatibilityStatus.THUMBNAIL_FAILED,
+            CompatibilityStatus.NEEDS_TRANSCODE,
+            CompatibilityStatus.UNTESTED
+        )
+        val existingIds = current.items.map { it.id }.toSet()
+        val sanitizedNew = newItems.filter { !it.isDeleted && it.compatibilityStatus in visible && !existingIds.contains(it.id) }
+        if (sanitizedNew.isEmpty()) return
+
+        _activePlaylist.value = current.copy(items = current.items + sanitizedNew)
     }
     
     fun clearPlaylist() { 
@@ -1168,7 +1238,7 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
         startDatabaseObservers(db)
     }
     fun setApplicationContextForTesting(context: Context) { applicationContext = context }
-    fun setIntelligenceCoreForTesting(core: AuraIntelligenceCore) { intelligenceCore = core }
+    fun setIntelligenceCoreForTesting(core: AuraIntelligenceCore?) { intelligenceCore = core }
     fun setComparisonCountForTesting(counts: Map<String, Int>) { _comparisonCounts.value = counts }
     fun setComparisonCountForTesting(mediaId: String, count: Int) { _comparisonCounts.update { it + (mediaId to count) } }
     suspend fun getLikeCount(mediaId: String): Int = getActualLikeCounts(listOf(mediaId))[mediaId] ?: 0

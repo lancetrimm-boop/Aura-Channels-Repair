@@ -2,6 +2,8 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
@@ -29,12 +32,14 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -48,32 +53,24 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.media3.common.Player
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.example.data.MediaItem
 import com.example.data.MediaRepository
 import com.example.data.MomentsMode
-import com.example.ui.theme.AuraBackground
-import com.example.ui.theme.AuraOnSurface
+import com.example.data.SlideshowPlaybackManager
 import com.example.ui.theme.AuraPurple
 import kotlinx.coroutines.delay
-
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.runtime.DisposableEffect
-import androidx.media3.common.Player
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.tween
-import androidx.compose.material3.CircularProgressIndicator
-import com.example.data.SlideshowPlaybackManager
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.ui.PlayerView
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
@@ -141,6 +138,7 @@ fun AuraMomentsSlideshowScreen(
     }
 }
 
+@OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 private fun SlideshowRenderer(
     items: List<MediaItem>,
@@ -169,8 +167,10 @@ private fun SlideshowRenderer(
     val currentItem = items[currentIndex.coerceIn(0, items.size - 1)]
     val isVideo = currentItem.mediaType == "VIDEO"
 
+    val slideshowDelaySec by repository.slideshowDelaySeconds.collectAsStateWithLifecycle()
+
     // Unified Pacing & Auto-advance logic
-    LaunchedEffect(currentIndex, isPlaying) {
+    LaunchedEffect(currentIndex, isPlaying, slideshowDelaySec) {
         if (!isPlaying) return@LaunchedEffect
         
         slideProgress = 0f
@@ -190,8 +190,9 @@ private fun SlideshowRenderer(
             }
             playbackManager.stop()
         } else {
-            val totalSteps = 40
-            val stepDelayMs = 100L // 4 seconds total per slide
+            val totalSteps = 20
+            val totalDelayMs = slideshowDelaySec.coerceIn(1, 10) * 1000L
+            val stepDelayMs = totalDelayMs / totalSteps
             for (i in 1..totalSteps) {
                 delay(stepDelayMs)
                 if (!isPlaying) break

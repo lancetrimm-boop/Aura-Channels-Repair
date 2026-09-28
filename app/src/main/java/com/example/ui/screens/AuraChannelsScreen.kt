@@ -1,15 +1,17 @@
 package com.example.ui.screens
 
+import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,16 +19,26 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import com.example.data.Channel
-import com.example.data.ChannelState
+import com.example.data.ChannelKind
 import com.example.data.MediaItem
 import com.example.ui.components.AuraMediaThumbnail
 import com.example.ui.components.AuraSectionHeader
+import com.example.ui.components.ChannelPreviewPool
 import com.example.ui.theme.*
 
 @Composable
@@ -35,9 +47,18 @@ fun AuraChannelsScreen(
     onMediaSelect: (MediaItem, List<MediaItem>) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
-    val channelState by viewModel.channelState.collectAsStateWithLifecycle()
     val selectedChannel by viewModel.selectedChannel.collectAsStateWithLifecycle()
     val selectedFilterType by viewModel.selectedFilterType.collectAsStateWithLifecycle()
+    val previews by viewModel.channelPreviews.collectAsStateWithLifecycle()
+    val slideshowDelaySec by viewModel.slideshowDelaySeconds.collectAsStateWithLifecycle()
+
+    val previewPool = remember { ChannelPreviewPool(maxPlayers = 3) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            previewPool.releaseAll()
+        }
+    }
 
     Column(
         modifier = modifier
@@ -48,7 +69,7 @@ fun AuraChannelsScreen(
     ) {
         AuraSectionHeader(
             title = "Aura Channels",
-            subtitle = "Continuous personalized stream"
+            subtitle = "Continuous personalized station stream"
         )
 
         Spacer(modifier = Modifier.height(AuraSpacing.S))
@@ -82,160 +103,331 @@ fun AuraChannelsScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(AuraSpacing.S))
-
-        // Channel Selector Pill Row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(AuraSpacing.S)
-        ) {
-            viewModel.defaultChannels.forEach { channel ->
-                val isSelected = selectedChannel.id == channel.id
-                Surface(
-                    onClick = { viewModel.selectChannel(channel) },
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (isSelected) DiscoveryViolet else Color.White,
-                    border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, AuraSubtleBorder),
-                    modifier = Modifier.height(36.dp)
+        // Photo Slideshow Duration Slider Control (Shown when Photos mode is active)
+        if (selectedFilterType == "PHOTOS") {
+            Spacer(modifier = Modifier.height(AuraSpacing.S))
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp)),
+                color = Color.White,
+                border = androidx.compose.foundation.BorderStroke(1.dp, AuraSubtleBorder)
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
-                    Box(
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        contentAlignment = Alignment.Center
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = channel.title,
-                            fontSize = 13.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                            color = if (isSelected) Color.White else AuraMutedSlate
+                            text = "Photo Duration / Slideshow Delay",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = AuraMidnight
+                        )
+                        Text(
+                            text = "$slideshowDelaySec ${if (slideshowDelaySec == 1) "second" else "seconds"}",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = DiscoveryViolet
                         )
                     }
+
+                    Slider(
+                        value = slideshowDelaySec.toFloat(),
+                        onValueChange = { viewModel.setSlideshowDelaySec(it.toInt()) },
+                        valueRange = 1f..10f,
+                        steps = 8,
+                        colors = SliderDefaults.colors(
+                            thumbColor = DiscoveryViolet,
+                            activeTrackColor = DiscoveryViolet,
+                            inactiveTrackColor = AuraSubtleBorder
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("slideshow_delay_slider")
+                    )
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(AuraSpacing.M))
 
-        // Stream Content
+        // Vertical Lean-Back Live Channel Browser
+        val listState = rememberLazyListState()
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
         ) {
-            when (val state = channelState) {
-                is ChannelState.Loading -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator(color = DiscoveryViolet)
-                            Spacer(modifier = Modifier.height(AuraSpacing.M))
-                            Text(
-                                text = "Tune in to ${state.channel.title}...",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = AuraMutedSlate
-                            )
-                        }
+            if (previews.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(AuraCrispWhite, shape = RoundedCornerShape(AuraSpacing.CornerRadiusMedium))
+                        .padding(AuraSpacing.L),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.Tv,
+                            contentDescription = "Loading Channels",
+                            tint = DiscoveryViolet,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(AuraSpacing.M))
+                        Text(
+                            text = "Loading Channel Stream...",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = AuraMidnight
+                        )
                     }
                 }
-                is ChannelState.Success -> {
-                    if (state.items.isEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(AuraCrispWhite, shape = RoundedCornerShape(AuraSpacing.CornerRadiusMedium))
-                                .padding(AuraSpacing.L),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector = Icons.Default.Tv,
-                                    contentDescription = "Empty Channel",
-                                    tint = DiscoveryViolet,
-                                    modifier = Modifier.size(48.dp)
-                                )
-                                Spacer(modifier = Modifier.height(AuraSpacing.M))
-                                Text(
-                                    text = "No Media Matched",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = AuraMidnight
-                                )
-                                Spacer(modifier = Modifier.height(AuraSpacing.XS))
-                                Text(
-                                    text = "Scan or import media to build your channel stream.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = AuraMutedSlate,
-                                    textAlign = TextAlign.Center
-                                )
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(AuraSpacing.M),
+                    contentPadding = PaddingValues(bottom = AuraSpacing.XL)
+                ) {
+                    itemsIndexed(previews, key = { _, preview -> preview.channel.id }) { index, preview ->
+                        val isVisibleInViewport = remember(index) {
+                            derivedStateOf {
+                                val layoutInfo = listState.layoutInfo
+                                val visibleItems = layoutInfo.visibleItemsInfo
+                                visibleItems.any { it.index == index }
                             }
                         }
-                    } else {
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
-                            contentPadding = PaddingValues(bottom = AuraSpacing.L),
-                            horizontalArrangement = Arrangement.spacedBy(AuraSpacing.S),
-                            verticalArrangement = Arrangement.spacedBy(AuraSpacing.S),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            items(state.items, key = { it.id }) { item ->
-                                Surface(
-                                    modifier = Modifier
-                                        .aspectRatio(1f)
-                                        .clip(RoundedCornerShape(AuraSpacing.CornerRadiusSmall))
-                                        .clickable { onMediaSelect(item, state.items) },
-                                    color = AuraSubtleBorder
-                                ) {
-                                    AuraMediaThumbnail(
-                                        itemId = item.id,
-                                        mediaType = item.mediaType,
-                                        imageUrl = item.imageUrl,
-                                        uriPath = item.uriPath,
-                                        title = item.title,
-                                        modifier = Modifier.fillMaxSize(),
-                                        locationTag = "channel_grid"
-                                    )
+
+                        ChannelPreviewCard(
+                            channelPreview = preview,
+                            isSelected = selectedChannel.id == preview.channel.id,
+                            previewPool = previewPool,
+                            isVisibleInViewport = isVisibleInViewport.value,
+                            onClick = { channel, previewItem, fullList ->
+                                viewModel.selectChannel(channel)
+                                if (previewItem != null && fullList.isNotEmpty()) {
+                                    onMediaSelect(previewItem, fullList)
                                 }
                             }
-                        }
+                        )
                     }
                 }
-                is ChannelState.Error -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(AuraCrispWhite, shape = RoundedCornerShape(AuraSpacing.CornerRadiusMedium))
-                            .padding(AuraSpacing.L),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "Channel Retrieval Failed",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                            Spacer(modifier = Modifier.height(AuraSpacing.XS))
-                            Text(
-                                text = state.message,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = AuraMutedSlate,
-                                textAlign = TextAlign.Center
-                            )
-                            Spacer(modifier = Modifier.height(AuraSpacing.M))
-                            Button(
-                                onClick = { viewModel.refreshActiveChannel() },
-                                colors = ButtonDefaults.buttonColors(containerColor = DiscoveryViolet)
-                            ) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Retry")
-                                Spacer(modifier = Modifier.width(AuraSpacing.XS))
-                                Text("Retry")
-                            }
-                        }
+            }
+        }
+    }
+}
+
+@OptIn(UnstableApi::class)
+@Composable
+fun ChannelPreviewCard(
+    channelPreview: ChannelPreviewState,
+    isSelected: Boolean,
+    previewPool: ChannelPreviewPool,
+    isVisibleInViewport: Boolean,
+    onClick: (Channel, MediaItem?, List<MediaItem>) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val channel = channelPreview.channel
+    val item = channelPreview.candidateItem
+    val fullList = channelPreview.fullItems
+
+    val isVideo = item != null && (item.mediaType.equals("VIDEO", ignoreCase = true) || item.mediaType.startsWith("VIDEO", ignoreCase = true))
+
+    var activePlayer by remember { mutableStateOf<ExoPlayer?>(null) }
+    var isPlayerReady by remember { mutableStateOf(false) }
+
+    DisposableEffect(channel.id, isVisibleInViewport, item?.id) {
+        if (isVisibleInViewport && isVideo && item != null) {
+            val player = previewPool.acquirePlayer(context, channel.id, item)
+            if (player != null) {
+                activePlayer = player
+                val listener = object : Player.Listener {
+                    override fun onRenderedFirstFrame() {
+                        isPlayerReady = true
                     }
                 }
-                ChannelState.Idle -> {
-                    Box(modifier = Modifier.fillMaxSize())
+                player.addListener(listener)
+                onDispose {
+                    player.removeListener(listener)
+                    previewPool.releasePlayer(channel.id)
+                    activePlayer = null
+                    isPlayerReady = false
+                }
+            } else {
+                onDispose { }
+            }
+        } else {
+            previewPool.releasePlayer(channel.id)
+            activePlayer = null
+            isPlayerReady = false
+            onDispose { }
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(240.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .border(
+                width = if (isSelected) 2.dp else 1.dp,
+                color = if (isSelected) DiscoveryViolet else AuraSubtleBorder,
+                shape = RoundedCornerShape(16.dp)
+            )
+            .clickable {
+                previewPool.releaseAll()
+                onClick(channel, item, fullList)
+            }
+            .background(Color.Black)
+    ) {
+        // 1. Static Fallback Image
+        if (item != null) {
+            AuraMediaThumbnail(
+                itemId = item.id,
+                mediaType = item.mediaType,
+                imageUrl = item.imageUrl,
+                uriPath = item.uriPath,
+                title = item.title,
+                modifier = Modifier.fillMaxSize(),
+                locationTag = "channel_preview_${channel.id}"
+            )
+        } else {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("No Media in Channel", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+            }
+        }
+
+        // 2. Live Motion Player View
+        val currentP = activePlayer
+        if (isVideo && currentP != null && isVisibleInViewport) {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        player = currentP
+                        useController = false
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    }
+                },
+                update = { view ->
+                    view.player = currentP
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        // 3. TOP OVERLAY: Channel Title Badge (Prominent Top Banner)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopStart)
+                .background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        colors = listOf(Color.Black.copy(alpha = 0.85f), Color.Transparent),
+                        endY = 140f
+                    )
+                )
+                .padding(horizontal = AuraSpacing.M, vertical = 12.dp)
+                .semantics { contentDescription = "Channel ${channel.title}" },
+            contentAlignment = Alignment.TopStart
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (channel.isDefault) {
+                        Icon(
+                            imageVector = Icons.Default.Star,
+                            contentDescription = "Default Station",
+                            tint = Color.Yellow,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Tv,
+                            contentDescription = "Station",
+                            tint = Color.White.copy(alpha = 0.9f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Text(
+                        text = channel.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = DiscoveryViolet.copy(alpha = 0.85f),
+                    modifier = Modifier.height(26.dp)
+                ) {
+                    Box(modifier = Modifier.padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = if (channel.channelKind == ChannelKind.SEARCH_SEEDED) "Search Seeded" else "Station",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+        }
+
+        // 4. BOTTOM OVERLAY: Preview Item Info & Tune-In Play Button
+        if (item != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f)),
+                            startY = 140f
+                        )
+                    )
+                    .padding(AuraSpacing.M),
+                contentAlignment = Alignment.BottomStart
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Preview: ${item.title}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            maxLines = 1
+                        )
+                        Text(
+                            text = "${item.genre} • ${if (isVideo) "Live Video Preview" else "Photo"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.8f)
+                        )
+                    }
+
+                    Icon(
+                        imageVector = Icons.Default.PlayCircle,
+                        contentDescription = "Tune In Channel",
+                        tint = Color.White,
+                        modifier = Modifier.size(36.dp)
+                    )
                 }
             }
         }

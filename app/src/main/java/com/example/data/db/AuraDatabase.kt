@@ -211,9 +211,10 @@ val MIGRATION_13_14 = object : Migration(13, 14) {
         SemanticRepresentationEntity::class,
         VideoFrameRepresentationEntity::class,
         SearchFeedbackEntity::class,
-        InteractionEventEntity::class
+        InteractionEventEntity::class,
+        ProgrammingFeedbackEntity::class
     ],
-    version = 44,
+    version = 45,
     exportSchema = false
 )
 @androidx.room.TypeConverters(IntelligenceConverters::class)
@@ -237,6 +238,7 @@ abstract class AuraDatabase : RoomDatabase() {
     abstract fun semanticRepresentationDao(): SemanticRepresentationDao
     abstract fun searchFeedbackDao(): SearchFeedbackDao
     abstract fun interactionDao(): InteractionDao
+    abstract fun programmingFeedbackDao(): ProgrammingFeedbackDao
 
 
     companion object {
@@ -819,6 +821,23 @@ abstract class AuraDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_44_45 = object : Migration(44, 45) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `programming_feedback` (
+                        `id` TEXT NOT NULL, 
+                        `mediaId` TEXT NOT NULL, 
+                        `channelId` TEXT NOT NULL, 
+                        `isGoodProgramming` INTEGER NOT NULL, 
+                        `timestamp` INTEGER NOT NULL, 
+                        PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_programming_feedback_channelId` ON `programming_feedback` (`channelId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_programming_feedback_mediaId` ON `programming_feedback` (`mediaId`)")
+            }
+        }
+
         fun getInstance(context: Context): AuraDatabase {
             return INSTANCE ?: synchronized(this) {
                 // Return instance if created while waiting for lock
@@ -882,7 +901,8 @@ abstract class AuraDatabase : RoomDatabase() {
                         MIGRATION_40_41,
                         MIGRATION_41_42,
                         MIGRATION_42_43,
-                        MIGRATION_43_44
+                        MIGRATION_43_44,
+                        MIGRATION_44_45
                     )
                     .build()
                     INSTANCE = instance

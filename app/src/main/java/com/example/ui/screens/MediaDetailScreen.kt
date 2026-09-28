@@ -245,6 +245,17 @@ fun MediaDetailScreen(
         }
     }
 
+    val slideshowDelaySec by repository.slideshowDelaySeconds.collectAsStateWithLifecycle()
+    val isPhotoPlaying = !isVideo && !showPlayerMenu && !showDeleteDialog
+
+    // Automatic Photo Slideshow advancement for Photo channel playback
+    LaunchedEffect(activeItem.id, isPhotoPlaying, slideshowDelaySec, isVideo) {
+        if (isVideo || !isPhotoPlaying) return@LaunchedEffect
+        val totalDelayMs = slideshowDelaySec.coerceIn(1, 10) * 1000L
+        delay(totalDelayMs)
+        onNext()
+    }
+
     // Watched Destination Observation for AI Skip learning
     LaunchedEffect(currentPositionMs, pendingWatchedDestinationPosMs, isPlaying) {
         if (pendingWatchedDestinationPosMs >= 0L) {
