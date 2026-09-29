@@ -1,6 +1,11 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.example.ui.screens
 
+import android.graphics.Bitmap
+import android.util.Log
 import androidx.annotation.OptIn
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,11 +19,15 @@ import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.*
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -26,13 +35,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.media3.common.Player
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
 import com.example.data.Channel
 import com.example.data.ChannelKind
 import com.example.data.MediaItem
@@ -40,7 +43,10 @@ import com.example.ui.components.AuraMediaThumbnail
 import com.example.ui.components.AuraSectionHeader
 import com.example.ui.components.ChannelPreviewPool
 import com.example.ui.theme.*
+import com.example.util.MediaThumbnailFetcher
+import kotlinx.coroutines.delay
 
+@kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AuraChannelsScreen(
     viewModel: ChannelViewModel,
@@ -50,15 +56,8 @@ fun AuraChannelsScreen(
     val selectedChannel by viewModel.selectedChannel.collectAsStateWithLifecycle()
     val selectedFilterType by viewModel.selectedFilterType.collectAsStateWithLifecycle()
     val previews by viewModel.channelPreviews.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val slideshowDelaySec by viewModel.slideshowDelaySeconds.collectAsStateWithLifecycle()
-
-    val previewPool = remember { ChannelPreviewPool(maxPlayers = 3) }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            previewPool.releaseAll()
-        }
-    }
 
     Column(
         modifier = modifier
@@ -158,7 +157,11 @@ fun AuraChannelsScreen(
         // Vertical Lean-Back Live Channel Browser
         val listState = rememberLazyListState()
 
-        Box(
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = {
+                viewModel.refreshChannels()
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
@@ -206,7 +209,6 @@ fun AuraChannelsScreen(
                         ChannelPreviewCard(
                             channelPreview = preview,
                             isSelected = selectedChannel.id == preview.channel.id,
-                            previewPool = previewPool,
                             isVisibleInViewport = isVisibleInViewport.value,
                             onClick = { channel, previewItem, fullList ->
                                 viewModel.selectChannel(channel)
@@ -222,53 +224,90 @@ fun AuraChannelsScreen(
     }
 }
 
-@OptIn(UnstableApi::class)
+private fun getEmptyStateMessage(channel: Channel): String {
+    return when (channel.id) {
+        "FAVORITES" -> "No Favorites Marked"
+        "CONTINUE" -> "No Continuing Series"
+        "REDISCOVER" -> "Nothing to Rediscover"
+        "MOOD" -> "No Matching Mood Items"
+        "ME_TV" -> "No Media in Channel"
+        else -> "No Items for '${channel.title}'"
+    }
+}
+
+@Composable
+fun ChannelMotionThumbnail(
+    channelId: String,
+    item: MediaItem,
+    isVisibleInViewport: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val uri = item.uriPath.ifEmpty { item.imageUrl }
+    val isVideo = item.mediaType.equals("VIDEO", ignoreCase = true) || item.mediaType.startsWith("VIDEO", ignoreCase = true)
+
+    var keyframes by remember(channelId, item.id, uri) { mutableStateOf<List<Bitmap>>(emptyList()) }
+    var currentFrameIndex by remember(channelId, item.id, uri) { mutableIntStateOf(0) }
+
+    LaunchedEffect(channelId, item.id, uri, isVideo) {
+        if (!isVideo || uri.isEmpty()) return@LaunchedEffect
+
+        val frame1 = MediaThumbnailFetcher.getFrameAtTime(context, uri, 1_000_000L)
+        val frame2 = MediaThumbnailFetcher.getFrameAtTime(context, uri, 4_000_000L)
+        val frame3 = MediaThumbnailFetcher.getFrameAtTime(context, uri, 7_000_000L)
+
+        val frames = listOfNotNull(frame1, frame2, frame3).filter { !it.isRecycled }
+        if (frames.isNotEmpty()) {
+            keyframes = frames
+        }
+    }
+
+    LaunchedEffect(isVisibleInViewport, keyframes) {
+        if (!isVisibleInViewport || keyframes.size <= 1) return@LaunchedEffect
+        while (true) {
+            delay(800L)
+            currentFrameIndex = (currentFrameIndex + 1) % keyframes.size
+        }
+    }
+
+    val activeBitmap = if (isVisibleInViewport && keyframes.isNotEmpty()) {
+        keyframes.getOrNull(currentFrameIndex)
+    } else null
+
+    if (activeBitmap != null && !activeBitmap.isRecycled) {
+        Image(
+            bitmap = activeBitmap.asImageBitmap(),
+            contentDescription = item.title,
+            modifier = modifier,
+            contentScale = ContentScale.Crop
+        )
+    } else {
+        AuraMediaThumbnail(
+            itemId = item.id,
+            mediaType = item.mediaType,
+            imageUrl = item.imageUrl,
+            uriPath = item.uriPath,
+            title = item.title,
+            modifier = modifier,
+            locationTag = "channel_motion_preview_${channelId}_${item.id}"
+        )
+    }
+}
+
 @Composable
 fun ChannelPreviewCard(
     channelPreview: ChannelPreviewState,
     isSelected: Boolean,
-    previewPool: ChannelPreviewPool,
+    previewPool: ChannelPreviewPool? = null,
     isVisibleInViewport: Boolean,
     onClick: (Channel, MediaItem?, List<MediaItem>) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
     val channel = channelPreview.channel
     val item = channelPreview.candidateItem
     val fullList = channelPreview.fullItems
 
     val isVideo = item != null && (item.mediaType.equals("VIDEO", ignoreCase = true) || item.mediaType.startsWith("VIDEO", ignoreCase = true))
-
-    var activePlayer by remember { mutableStateOf<ExoPlayer?>(null) }
-    var isPlayerReady by remember { mutableStateOf(false) }
-
-    DisposableEffect(channel.id, isVisibleInViewport, item?.id) {
-        if (isVisibleInViewport && isVideo && item != null) {
-            val player = previewPool.acquirePlayer(context, channel.id, item)
-            if (player != null) {
-                activePlayer = player
-                val listener = object : Player.Listener {
-                    override fun onRenderedFirstFrame() {
-                        isPlayerReady = true
-                    }
-                }
-                player.addListener(listener)
-                onDispose {
-                    player.removeListener(listener)
-                    previewPool.releasePlayer(channel.id)
-                    activePlayer = null
-                    isPlayerReady = false
-                }
-            } else {
-                onDispose { }
-            }
-        } else {
-            previewPool.releasePlayer(channel.id)
-            activePlayer = null
-            isPlayerReady = false
-            onDispose { }
-        }
-    }
 
     Box(
         modifier = modifier
@@ -281,50 +320,33 @@ fun ChannelPreviewCard(
                 shape = RoundedCornerShape(16.dp)
             )
             .clickable {
-                previewPool.releaseAll()
                 onClick(channel, item, fullList)
             }
             .background(Color.Black)
     ) {
-        // 1. Static Fallback Image
+        // 1. Motion or Static Thumbnail
         if (item != null) {
-            AuraMediaThumbnail(
-                itemId = item.id,
-                mediaType = item.mediaType,
-                imageUrl = item.imageUrl,
-                uriPath = item.uriPath,
-                title = item.title,
-                modifier = Modifier.fillMaxSize(),
-                locationTag = "channel_preview_${channel.id}"
+            ChannelMotionThumbnail(
+                channelId = channel.id,
+                item = item,
+                isVisibleInViewport = isVisibleInViewport,
+                modifier = Modifier.fillMaxSize()
             )
         } else {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
-                Text("No Media in Channel", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                Text(
+                    text = getEmptyStateMessage(channel),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White.copy(alpha = 0.8f)
+                )
             }
         }
 
-        // 2. Live Motion Player View
-        val currentP = activePlayer
-        if (isVideo && currentP != null && isVisibleInViewport) {
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        player = currentP
-                        useController = false
-                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                    }
-                },
-                update = { view ->
-                    view.player = currentP
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-
-        // 3. TOP OVERLAY: Channel Title Badge (Prominent Top Banner)
+        // 2. TOP OVERLAY: Channel Title Badge (Prominent Top Banner)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -388,7 +410,7 @@ fun ChannelPreviewCard(
             }
         }
 
-        // 4. BOTTOM OVERLAY: Preview Item Info & Tune-In Play Button
+        // 3. BOTTOM OVERLAY: Preview Item Info & Tune-In Play Button
         if (item != null) {
             Box(
                 modifier = Modifier
@@ -416,7 +438,7 @@ fun ChannelPreviewCard(
                             maxLines = 1
                         )
                         Text(
-                            text = "${item.genre} • ${if (isVideo) "Live Video Preview" else "Photo"}",
+                            text = "${item.genre} • ${if (isVideo) "Motion Preview" else "Photo"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.8f)
                         )

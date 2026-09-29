@@ -57,7 +57,9 @@ class MeTVProgrammingEngine {
         skipEvents: List<AISkipEventEntity> = emptyList(),
         experienceRequest: ExperienceRequest? = null,
         currentTimeMs: Long = System.currentTimeMillis(),
-        targetCount: Int = 30
+        targetCount: Int = 30,
+        refreshEpoch: Int = 0,
+        sessionExposures: Map<String, Int> = emptyMap()
     ): ProgrammedStationResult {
         if (availableMedia.isEmpty()) {
             return ProgrammedStationResult(emptyList(), emptyMap(), emptyMap())
@@ -149,13 +151,14 @@ class MeTVProgrammingEngine {
         val scoredItems = homogeneousPool.map { item ->
             val exp = exposureMap[item.id] ?: 0
             val skips = skipCountsByMedia[item.id] ?: 0
-            val effectiveExposure = exp + skips
+            val sessionExp = sessionExposures[item.id] ?: 0
+            val effectiveExposure = exp + skips + sessionExp
 
             // Base TasteDNA aesthetic score
             var score = calculateAestheticScore(item, tasteDNA, experienceRequest)
 
-            // Lane 1 Boost: Novelty
-            if (exp == 0 && skips == 0) {
+            // Lane 1 Boost: Novelty (Unseen items with 0 total effective exposure)
+            if (effectiveExposure == 0) {
                 score += 0.30f
             }
 
@@ -167,7 +170,7 @@ class MeTVProgrammingEngine {
 
             // Lane 3 Boost: Favorites (Unwatched favorites get higher priority)
             if (item.isFavorite) {
-                score += if (exp == 0) 0.35f else 0.20f
+                score += if (effectiveExposure == 0) 0.35f else 0.20f
             }
 
             // Lane 5 Boost: Daypart Influence
@@ -178,9 +181,9 @@ class MeTVProgrammingEngine {
                 score += 0.40f
             }
 
-            // Exposure Penalty (High exposures & skips reduce score)
+            // Exposure Penalty (Persistent exposures, skips, and active session preview exposures reduce score)
             if (effectiveExposure > 0) {
-                val penalty = (effectiveExposure * 0.08f).coerceAtMost(0.40f)
+                val penalty = (effectiveExposure * 0.12f).coerceAtMost(0.60f)
                 score -= penalty
             }
 
@@ -195,9 +198,12 @@ class MeTVProgrammingEngine {
             item to score
         }
 
-        // 4. Sort deterministically by final blended score descending with stable tie-breaking by id
+        // 4. Sort deterministically by final blended score descending with tie-breaking by refreshEpoch
         val sortedItems = scoredItems
-            .sortedWith(compareByDescending<Pair<MediaItem, Float>> { it.second }.thenBy { it.first.id })
+            .sortedWith(
+                compareByDescending<Pair<MediaItem, Float>> { it.second }
+                    .thenBy { (it.first.id.hashCode() xor refreshEpoch).toString() }
+            )
             .map { it.first }
             .take(targetCount)
 

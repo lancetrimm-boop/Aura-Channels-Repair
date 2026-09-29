@@ -38,8 +38,15 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -168,6 +175,7 @@ fun MediaDetailScreen(
     onSeeSimilar: ((MediaItem) -> Unit)? = null,
     onAISkipEvent: ((String, String, Long, Long) -> Unit)? = null,
     onAddVisualReference: ((MediaItem) -> Unit)? = null,
+    onReloadChannel: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
@@ -245,15 +253,24 @@ fun MediaDetailScreen(
         }
     }
 
+    val isAtEndOfPlaylist = remember(playlistState, currentItemIndex) {
+        playlistState != null && (currentItemIndex >= playlistState.items.size - 1 || !playlistState.hasNext)
+    }
+    var showEndOfChannelPrompt by remember(playlistState?.items, currentItemIndex) { mutableStateOf(false) }
+
     val slideshowDelaySec by repository.slideshowDelaySeconds.collectAsStateWithLifecycle()
     val isPhotoPlaying = !isVideo && !showPlayerMenu && !showDeleteDialog
 
     // Automatic Photo Slideshow advancement for Photo channel playback
-    LaunchedEffect(activeItem.id, isPhotoPlaying, slideshowDelaySec, isVideo) {
+    LaunchedEffect(activeItem.id, isPhotoPlaying, slideshowDelaySec, isVideo, isAtEndOfPlaylist) {
         if (isVideo || !isPhotoPlaying) return@LaunchedEffect
         val totalDelayMs = slideshowDelaySec.coerceIn(1, 10) * 1000L
         delay(totalDelayMs)
-        onNext()
+        if (isAtEndOfPlaylist) {
+            showEndOfChannelPrompt = true
+        } else {
+            onNext()
+        }
     }
 
     // Watched Destination Observation for AI Skip learning
@@ -369,6 +386,9 @@ fun MediaDetailScreen(
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     if (playbackState == Player.STATE_ENDED) {
+                        if (isAtEndOfPlaylist) {
+                            showEndOfChannelPrompt = true
+                        }
                         repository.interactionRepository?.let { iRepo ->
                             com.example.data.AuraInteractionService.logInteraction(
                                 repository,
@@ -1087,15 +1107,22 @@ fun MediaDetailScreen(
                         }
 
                         // 5. Next Button
+                        val isNextButtonEnabled = playlistState == null || playlistState.hasNext || isAtEndOfPlaylist
                         IconButton(
-                            onClick = { onNext() },
-                            enabled = playlistState?.hasNext == true,
+                            onClick = {
+                                if (isAtEndOfPlaylist) {
+                                    showEndOfChannelPrompt = true
+                                } else {
+                                    onNext()
+                                }
+                            },
+                            enabled = isNextButtonEnabled,
                             modifier = Modifier.testTag("detail_next_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Default.SkipNext,
                                 contentDescription = "Next",
-                                tint = if (playlistState?.hasNext == true) Color.White else Color.White.copy(alpha = 0.3f),
+                                tint = if (isNextButtonEnabled) Color.White else Color.White.copy(alpha = 0.3f),
                                 modifier = Modifier.size(22.dp)
                             )
                         }
@@ -1673,6 +1700,44 @@ fun MediaDetailScreen(
                 }
             }
         }
+    }
+
+    if (showEndOfChannelPrompt) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = {
+                Text(
+                    text = "You've reached the end of this channel.",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showEndOfChannelPrompt = false
+                        onReloadChannel?.invoke()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DiscoveryViolet)
+                ) {
+                    Text("Reload this channel", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = {
+                        showEndOfChannelPrompt = false
+                        onBack()
+                    },
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.5f))
+                ) {
+                    Text("Switch channel", color = Color.White)
+                }
+            },
+            containerColor = AuraMidnight,
+            shape = RoundedCornerShape(16.dp)
+        )
     }
 }
 

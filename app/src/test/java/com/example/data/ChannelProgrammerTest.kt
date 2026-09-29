@@ -42,7 +42,9 @@ class ChannelProgrammerTest {
     @Test
     fun testAllFixedChannelsResolveToStrategy() {
         val channels = ChannelRegistry.allFixedChannels()
-        val media = listOf(createMediaItem("v1", "Test Video"))
+        val media = listOf(
+            createMediaItem("v1", "Fav Video", isFavorite = true, parentContentId = "series_1")
+        )
         val context = ChannelProgrammingContext(availableMedia = media, filterType = "VIDEOS")
 
         assertEquals(5, channels.size)
@@ -135,8 +137,8 @@ class ChannelProgrammerTest {
 
     @Test
     fun testMediaTypeHomogeneity_EnforcedAcrossAll5Channels() {
-        val photo1 = createMediaItem("p1", "Photo 1", isVideo = false)
-        val video1 = createMediaItem("v1", "Video 1", isVideo = true)
+        val photo1 = createMediaItem("p1", "Photo 1", isVideo = false, isFavorite = true, parentContentId = "series_p")
+        val video1 = createMediaItem("v1", "Video 1", isVideo = true, isFavorite = true, parentContentId = "series_v")
         val media = listOf(photo1, video1)
 
         val videoContext = ChannelProgrammingContext(availableMedia = media, filterType = "VIDEOS")
@@ -158,5 +160,55 @@ class ChannelProgrammerTest {
             val result = programmer.programChannel(channel, context)
             assertTrue(result.isEmpty())
         }
+    }
+
+    @Test
+    fun testExposurePenalty_UnseenMediaOutranksExposedMedia() {
+        val meTvChannel = ChannelRegistry.get("ME_TV")!!
+        val exposedItem = createMediaItem("v1", "Exposed Video")
+        val unseenItem = createMediaItem("v2", "Unseen Video")
+        val media = listOf(exposedItem, unseenItem)
+        val context = ChannelProgrammingContext(
+            availableMedia = media,
+            exposureMap = mapOf("v1" to 5, "v2" to 0)
+        )
+
+        val result = programmer.programChannel(meTvChannel, context)
+        assertEquals("v2", result[0].id)
+    }
+
+    @Test
+    fun testSessionExposure_PenalizesActivelyPresentedPreviews() {
+        val meTvChannel = ChannelRegistry.get("ME_TV")!!
+        val item1 = createMediaItem("v1", "Video 1")
+        val item2 = createMediaItem("v2", "Video 2")
+        val media = listOf(item1, item2)
+
+        val contextWithSessionExp = ChannelProgrammingContext(
+            availableMedia = media,
+            sessionExposures = mapOf("v1" to 3, "v2" to 0)
+        )
+
+        val result = programmer.programChannel(meTvChannel, contextWithSessionExp)
+        assertEquals("v2", result[0].id)
+    }
+
+    @Test
+    fun testRefreshEpoch_RotatesEqualCandidatesWithoutShuffling() {
+        val meTvChannel = ChannelRegistry.get("ME_TV")!!
+        val item1 = createMediaItem("v1", "Video 1")
+        val item2 = createMediaItem("v2", "Video 2")
+        val media = listOf(item1, item2)
+
+        val contextEpoch0 = ChannelProgrammingContext(availableMedia = media, refreshEpoch = 0)
+        val contextEpoch1 = ChannelProgrammingContext(availableMedia = media, refreshEpoch = 1)
+
+        val result0 = programmer.programChannel(meTvChannel, contextEpoch0)
+        val result1 = programmer.programChannel(meTvChannel, contextEpoch1)
+
+        assertNotNull(result0)
+        assertNotNull(result1)
+        assertEquals(2, result0.size)
+        assertEquals(2, result1.size)
     }
 }

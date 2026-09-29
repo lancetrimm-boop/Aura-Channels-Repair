@@ -15,7 +15,9 @@ data class ChannelProgrammingContext(
     val exposureMap: Map<String, Int> = emptyMap(),
     val skipEvents: List<AISkipEventEntity> = emptyList(),
     val experienceRequest: ExperienceRequest? = null,
-    val currentTimeMs: Long = System.currentTimeMillis()
+    val currentTimeMs: Long = System.currentTimeMillis(),
+    val refreshEpoch: Int = 0,
+    val sessionExposures: Map<String, Int> = emptyMap()
 )
 
 /**

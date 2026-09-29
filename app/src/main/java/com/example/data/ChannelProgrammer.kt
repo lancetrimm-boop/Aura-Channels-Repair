@@ -77,7 +77,9 @@ class MeTvLaneStrategy(
             skipEvents = context.skipEvents,
             experienceRequest = context.experienceRequest,
             currentTimeMs = context.currentTimeMs,
-            targetCount = limit
+            targetCount = limit,
+            refreshEpoch = context.refreshEpoch,
+            sessionExposures = context.sessionExposures
         )
         return result.items
     }
@@ -138,7 +140,7 @@ class RediscoverLaneStrategy : LaneStrategy {
             }
         }
 
-        return result.take(limit).ifEmpty { pool.take(limit) }
+        return result.take(limit)
     }
 }
 
@@ -149,14 +151,18 @@ class FavoritesLaneStrategy : LaneStrategy {
     override fun programBlock(channel: Channel, context: ChannelProgrammingContext, limit: Int): List<MediaItem> {
         val pool = ChannelProgrammer.filterPool(context.availableMedia, context.filterType)
         val favorites = pool.filter { it.isFavorite }
-        val candidates = if (favorites.isNotEmpty()) favorites else pool
-        if (candidates.isEmpty()) return emptyList()
+        if (favorites.isEmpty()) return emptyList()
 
-        return candidates.map { item ->
-            val exp = context.exposureMap[item.id] ?: 0
-            val score = if (item.isFavorite) (if (exp == 0) 3.0f else 2.0f) else (1.0f / (1.0f + exp))
+        val skipCounts = context.skipEvents.groupingBy { it.mediaId }.eachCount()
+
+        return favorites.map { item ->
+            val exp = (context.exposureMap[item.id] ?: 0) + (skipCounts[item.id] ?: 0) + (context.sessionExposures[item.id] ?: 0)
+            val score = if (exp == 0) 3.0f else 2.0f - (exp * 0.10f)
             item to score
-        }.sortedWith(compareByDescending<Pair<MediaItem, Float>> { it.second }.thenBy { it.first.id })
+        }.sortedWith(
+            compareByDescending<Pair<MediaItem, Float>> { it.second }
+                .thenBy { (it.first.id.hashCode() xor context.refreshEpoch).toString() }
+        )
             .map { it.first }
             .take(limit)
     }
@@ -169,9 +175,11 @@ class MoodLaneStrategy : LaneStrategy {
     override fun programBlock(channel: Channel, context: ChannelProgrammingContext, limit: Int): List<MediaItem> {
         val pool = ChannelProgrammer.filterPool(context.availableMedia, context.filterType)
         val nudge = context.experienceRequest?.moodNudge?.lowercase() ?: ""
+        val skipCounts = context.skipEvents.groupingBy { it.mediaId }.eachCount()
 
         return pool.map { item ->
-            var score = 0.5f + (item.rating / 10.0f)
+            val exp = (context.exposureMap[item.id] ?: 0) + (skipCounts[item.id] ?: 0) + (context.sessionExposures[item.id] ?: 0)
+            var score = 0.5f + (item.rating / 10.0f) - (exp * 0.08f)
             if (nudge.contains("energetic") && (item.genre.contains("Action", ignoreCase = true) || item.title.contains("Dynamic", ignoreCase = true))) {
                 score += 0.3f
             } else if (nudge.contains("serene") && (item.genre.contains("Atmospheric", ignoreCase = true) || item.title.contains("Serene", ignoreCase = true))) {
@@ -180,7 +188,10 @@ class MoodLaneStrategy : LaneStrategy {
                 score += 0.3f
             }
             item to score
-        }.sortedWith(compareByDescending<Pair<MediaItem, Float>> { it.second }.thenBy { it.first.id })
+        }.sortedWith(
+            compareByDescending<Pair<MediaItem, Float>> { it.second }
+                .thenBy { (it.first.id.hashCode() xor context.refreshEpoch).toString() }
+        )
             .map { it.first }
             .take(limit)
     }
@@ -203,7 +214,7 @@ class ContinueLaneStrategy : LaneStrategy {
                 result.add(oldestUnwatched)
             }
         }
-        return result.take(limit).ifEmpty { pool.take(limit) }
+        return result.take(limit)
     }
 }
 
@@ -287,9 +298,11 @@ class SearchSeededLaneStrategy : LaneStrategy {
 
         val query = channel.query.lowercase().trim()
         val refIds = channel.referenceMediaIds.toSet()
+        val skipCounts = context.skipEvents.groupingBy { it.mediaId }.eachCount()
 
         val scored = pool.map { item ->
-            var score = 0.5f
+            val exp = (context.exposureMap[item.id] ?: 0) + (skipCounts[item.id] ?: 0) + (context.sessionExposures[item.id] ?: 0)
+            var score = 0.5f - (exp * 0.08f)
             if (query.isNotEmpty()) {
                 if (item.title.lowercase().contains(query)) score += 0.4f
                 if (item.genre.lowercase().contains(query)) score += 0.3f
@@ -300,7 +313,10 @@ class SearchSeededLaneStrategy : LaneStrategy {
             item to score
         }
 
-        return scored.sortedWith(compareByDescending<Pair<MediaItem, Float>> { it.second }.thenBy { it.first.id })
+        return scored.sortedWith(
+            compareByDescending<Pair<MediaItem, Float>> { it.second }
+                .thenBy { (it.first.id.hashCode() xor context.refreshEpoch).toString() }
+        )
             .map { it.first }
             .take(limit)
     }

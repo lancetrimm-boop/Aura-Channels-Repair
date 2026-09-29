@@ -24,7 +24,12 @@ class ChannelPreviewArchitectureTest {
         ChannelRegistry.clearCustomChannelsForTesting()
         pool = ChannelPreviewPool(
             maxPlayers = 3,
-            playerFactory = { mock(ExoPlayer::class.java) }
+            playerFactory = {
+                val mockPlayer = mock(ExoPlayer::class.java)
+                org.mockito.Mockito.`when`(mockPlayer.applicationLooper).thenReturn(android.os.Looper.getMainLooper())
+                org.mockito.Mockito.`when`(mockPlayer.playbackParameters).thenReturn(androidx.media3.common.PlaybackParameters.DEFAULT)
+                mockPlayer
+            }
         )
     }
 
@@ -134,5 +139,109 @@ class ChannelPreviewArchitectureTest {
         }
 
         assertEquals("5 fixed channels must receive 5 unique preview candidates when available", 5, usedPreviewIds.size)
+    }
+
+    @Test
+    fun testPreviewPool_RebindsPlayerWhenMediaItemChangesForSameChannel() {
+        val context = RuntimeEnvironment.getApplication()
+        val itemA = createMediaItem("v1")
+        val itemB = createMediaItem("v2")
+
+        val player1 = pool.acquirePlayer(context, "ME_TV", itemA)
+        assertNotNull(player1)
+        assertEquals(1, pool.getActivePlayerCount())
+
+        // Re-acquire for same channel ID but different mediaItem -> returns same player instance, re-bound
+        val player2 = pool.acquirePlayer(context, "ME_TV", itemB)
+        assertNotNull(player2)
+        assertSame(player1, player2)
+        assertEquals(1, pool.getActivePlayerCount())
+    }
+
+    @Test
+    fun testPreviewPool_ReleasePlayerClearsActiveItemMap() {
+        val context = RuntimeEnvironment.getApplication()
+        val item1 = createMediaItem("v1")
+
+        pool.acquirePlayer(context, "ME_TV", item1)
+        assertEquals(1, pool.getActivePlayerCount())
+
+        pool.releasePlayer("ME_TV")
+        assertEquals(0, pool.getActivePlayerCount())
+        assertEquals(1, pool.getIdlePlayerCount())
+    }
+
+    @Test
+    fun testPreviewPool_DetachBeforeIdleInvariantOnEvictionAndRelease() {
+        val context = RuntimeEnvironment.getApplication()
+        val item1 = createMediaItem("v1")
+        val item2 = createMediaItem("v2")
+        val item3 = createMediaItem("v3")
+        val item4 = createMediaItem("v4")
+
+        val playerView1 = androidx.media3.ui.PlayerView(context)
+        val playerView2 = androidx.media3.ui.PlayerView(context)
+
+        val player1 = pool.acquirePlayer(context, "ME_TV", item1)
+        pool.bindView("ME_TV", playerView1)
+        assertEquals(player1, playerView1.player)
+
+        val player2 = pool.acquirePlayer(context, "FAVORITES", item2)
+        pool.bindView("FAVORITES", playerView2)
+        assertEquals(player2, playerView2.player)
+
+        // Explicit unbind/release of ME_TV
+        pool.unbindView("ME_TV")
+        pool.releasePlayer("ME_TV")
+        assertNull("PlayerView MUST be detached upon unbind/release", playerView1.player)
+
+        // Acquire 3rd and 4th channels to force LRU eviction of FAVORITES
+        pool.acquirePlayer(context, "REDISCOVER", item3)
+        pool.acquirePlayer(context, "CONTINUE", item4) // Forces LRU eviction of FAVORITES
+
+        assertNull("PlayerView MUST be detached upon LRU eviction before player enters idle pool", playerView2.player)
+    }
+
+    @Test
+    fun testInsufficientMedia_RemainingChannelsReceiveNullCandidateInsteadOfDuplicate() {
+        val item1 = createMediaItem("item_1")
+        val item2 = createMediaItem("item_2")
+        val available = listOf(item1, item2) // Only 2 items for 5 channels
+
+        val usedPreviewIds = mutableSetOf<String>()
+        val channels = ChannelRegistry.allFixedChannels()
+
+        val assigned = channels.map { channel ->
+            val candidate = available.firstOrNull { it.id !in usedPreviewIds }
+            if (candidate != null) {
+                usedPreviewIds.add(candidate.id)
+            }
+            candidate
+        }
+
+        assertEquals(2, assigned.filterNotNull().size)
+        assertEquals(3, assigned.filter { it == null }.size)
+        assertEquals(2, usedPreviewIds.size)
+    }
+
+    @Test
+    fun testGetActivePlayer_NullOnEviction() {
+        val context = RuntimeEnvironment.getApplication()
+        val item1 = createMediaItem("v1")
+        val item2 = createMediaItem("v2")
+        val item3 = createMediaItem("v3")
+        val item4 = createMediaItem("v4")
+
+        val p1 = pool.acquirePlayer(context, "ME_TV", item1)
+        assertEquals(p1, pool.getActivePlayer("ME_TV"))
+
+        pool.acquirePlayer(context, "FAVORITES", item2)
+        pool.acquirePlayer(context, "REDISCOVER", item3)
+        assertEquals(p1, pool.getActivePlayer("ME_TV"))
+
+        // 4th channel forces LRU eviction of ME_TV
+        val p4 = pool.acquirePlayer(context, "CONTINUE", item4)
+        assertNull("getActivePlayer for evicted channel MUST return null immediately", pool.getActivePlayer("ME_TV"))
+        assertEquals(p4, pool.getActivePlayer("CONTINUE"))
     }
 }

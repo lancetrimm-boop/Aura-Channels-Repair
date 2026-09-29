@@ -46,7 +46,9 @@ class ChannelSessionManager(
         channel: Channel,
         repository: MediaRepository,
         filterType: String = "VIDEOS",
-        blockLimit: Int = 20
+        blockLimit: Int = 20,
+        refreshEpoch: Int = 0,
+        sessionExposures: Map<String, Int> = emptyMap()
     ) = withContext(Dispatchers.Default) {
         val newGen = sessionMutex.withLock {
             currentSessionGeneration++
@@ -76,9 +78,11 @@ class ChannelSessionManager(
                     filterType = filterType,
                     tasteDNA = repository.tasteDNA.value,
                     programmingFeedback = feedback,
-                    exposureMap = emptyMap(),
+                    exposureMap = availableMedia.associate { it.id to it.exposureCount },
                     skipEvents = skipEvents,
-                    experienceRequest = ExperienceRequest(channel.title)
+                    experienceRequest = ExperienceRequest(channel.title),
+                    refreshEpoch = refreshEpoch,
+                    sessionExposures = sessionExposures
                 )
 
                 val programmedItems = programmer.programChannel(channel, context, limit = blockLimit)
@@ -172,7 +176,9 @@ class ChannelSessionManager(
         channel: Channel,
         repository: MediaRepository,
         filterType: String = "VIDEOS",
-        blockLimit: Int = 20
+        blockLimit: Int = 20,
+        refreshEpoch: Int = 0,
+        sessionExposures: Map<String, Int> = emptyMap()
     ): Boolean = withContext(Dispatchers.Default) {
         sessionMutex.withLock {
             if (isReplenishing) return@withContext false
@@ -182,17 +188,20 @@ class ChannelSessionManager(
         val targetGen = currentSessionGeneration
 
         try {
+            val availableMedia = repository.mediaItems.value
             val db = repository.getDatabase()
             val feedback = db?.programmingFeedbackDao()?.getAllFeedback() ?: emptyList()
             val skipEvents = db?.aiSkipDao()?.observeAllEvents()?.firstOrNull() ?: emptyList()
 
             val context = ChannelProgrammingContext(
-                availableMedia = repository.mediaItems.value,
+                availableMedia = availableMedia,
                 filterType = filterType,
                 tasteDNA = repository.tasteDNA.value,
                 programmingFeedback = feedback,
-                exposureMap = emptyMap(),
-                skipEvents = skipEvents
+                exposureMap = availableMedia.associate { it.id to it.exposureCount },
+                skipEvents = skipEvents,
+                refreshEpoch = refreshEpoch,
+                sessionExposures = sessionExposures
             )
 
             val nextBlock = programmer.programChannel(channel, context, limit = blockLimit)

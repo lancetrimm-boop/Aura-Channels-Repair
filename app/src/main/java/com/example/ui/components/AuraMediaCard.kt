@@ -280,10 +280,10 @@ fun AuraMediaThumbnail(
     val context = LocalContext.current
     
     // AURA REPAIR: Identity-safe state to prevent recycled cards from showing stale thumbnails
-    var thumbnailResult by remember(itemId) { mutableStateOf<ThumbnailResult?>(null) }
+    var thumbnailResult by remember(itemId, uriPath, imageUrl, convertedUri) { mutableStateOf<ThumbnailResult?>(null) }
     
     // AURA REPAIR: Track if video is actually rendering to prevent black frame gap
-    var isVideoRendering by remember(itemId) { mutableStateOf(false) }
+    var isVideoRendering by remember(itemId, uriPath, imageUrl, convertedUri) { mutableStateOf(false) }
 
     LaunchedEffect(itemId, uriPath, imageUrl, convertedUri) {
         // Preference: Converted > Original > Remote

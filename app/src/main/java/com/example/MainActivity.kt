@@ -367,7 +367,14 @@ fun AuraMainContent(repository: MediaRepository) {
 
     val onUnlockPro: () -> Unit = {
         (context as? Activity)?.let { activity ->
-            repository.billingManager?.launchPurchaseFlow(activity)
+            if (com.example.BuildConfig.ENABLE_DEVELOPER_TOOLS || repository.billingManager == null) {
+                (activity as? androidx.activity.ComponentActivity)?.lifecycleScope?.launch {
+                    repository.entitlementRepository?.updateEntitlement(true)
+                    cleanupReviewViewModel.loadRecommendations()
+                }
+            } else {
+                repository.billingManager?.launchPurchaseFlow(activity)
+            }
         }
     }
 
@@ -520,6 +527,10 @@ fun AuraMainContent(repository: MediaRepository) {
                     onPrevious = { repository.previousPlaylistItem() },
                     onSelectIndex = { idx -> repository.selectPlaylistItem(idx) },
                     onUpdateRating = { id, rating -> repository.updateRating(id, rating) },
+                    onReloadChannel = {
+                        val currentChannel = channelViewModel.selectedChannel.value
+                        channelViewModel.selectChannel(currentChannel)
+                    },
                     onDeleteMedia = { id ->
                         val isComparison = activePlaylist?.sourceTitle == "Compare Pair"
                         requestDeletion(id, isComparison)

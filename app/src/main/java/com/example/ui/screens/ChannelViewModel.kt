@@ -36,6 +36,12 @@ class ChannelViewModel(
     private val _channelPreviews = MutableStateFlow<List<ChannelPreviewState>>(emptyList())
     val channelPreviews: StateFlow<List<ChannelPreviewState>> = _channelPreviews.asStateFlow()
 
+    private val _isRefreshing = MutableStateFlow<Boolean>(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
+    private var refreshEpoch = 0
+    private val sessionExposures = mutableMapOf<String, Int>()
+
     val slideshowDelaySeconds: StateFlow<Int> = repository.slideshowDelaySeconds
 
     init {
@@ -55,21 +61,24 @@ class ChannelViewModel(
             val context = ChannelProgrammingContext(
                 availableMedia = available,
                 filterType = filter,
-                tasteDNA = repository.tasteDNA.value
+                tasteDNA = repository.tasteDNA.value,
+                exposureMap = available.associate { it.id to it.exposureCount },
+                refreshEpoch = refreshEpoch,
+                sessionExposures = sessionExposures.toMap()
             )
 
             val usedPreviewIds = mutableSetOf<String>()
 
             val states = allChannels.map { channel ->
                 val programmed = programmer.programChannel(channel, context, limit = 20)
-                val candidate = programmed.firstOrNull { it.id !in usedPreviewIds } ?: programmed.firstOrNull()
+                val candidate = programmed.firstOrNull { it.id !in usedPreviewIds }
                 if (candidate != null) {
                     usedPreviewIds.add(candidate.id)
                 }
 
-                val adjustedFullItems = if (candidate != null && programmed.contains(candidate)) {
+                val adjustedFullItems = if (candidate != null) {
                     listOf(candidate) + programmed.filter { it.id != candidate.id }
-                } else programmed
+                } else emptyList()
 
                 ChannelPreviewState(
                     channel = channel,
@@ -84,7 +93,13 @@ class ChannelViewModel(
     fun selectChannel(channel: Channel) {
         _selectedChannel.value = channel
         viewModelScope.launch {
-            sessionManager.selectChannel(channel, repository, _selectedFilterType.value)
+            sessionManager.selectChannel(
+                channel = channel,
+                repository = repository,
+                filterType = _selectedFilterType.value,
+                refreshEpoch = refreshEpoch,
+                sessionExposures = sessionExposures.toMap()
+            )
         }
     }
 
@@ -103,5 +118,64 @@ class ChannelViewModel(
         val current = _selectedChannel.value
         selectChannel(current)
         loadChannelPreviews()
+    }
+
+    fun refreshChannels() {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            try {
+                // Record candidate IDs actually presented as active previews in sessionExposures
+                _channelPreviews.value.forEach { previewState ->
+                    previewState.candidateItem?.let { item ->
+                        val current = sessionExposures[item.id] ?: 0
+                        sessionExposures[item.id] = current + 1
+                    }
+                }
+                refreshEpoch++
+
+                val available = repository.mediaItems.value
+                val filter = _selectedFilterType.value
+                val context = ChannelProgrammingContext(
+                    availableMedia = available,
+                    filterType = filter,
+                    tasteDNA = repository.tasteDNA.value,
+                    exposureMap = available.associate { it.id to it.exposureCount },
+                    refreshEpoch = refreshEpoch,
+                    sessionExposures = sessionExposures.toMap()
+                )
+
+                val usedPreviewIds = mutableSetOf<String>()
+
+                val states = allChannels.map { channel ->
+                    val programmed = programmer.programChannel(channel, context, limit = 20)
+                    val candidate = programmed.firstOrNull { it.id !in usedPreviewIds }
+                    if (candidate != null) {
+                        usedPreviewIds.add(candidate.id)
+                    }
+
+                    val adjustedFullItems = if (candidate != null) {
+                        listOf(candidate) + programmed.filter { it.id != candidate.id }
+                    } else emptyList()
+
+                    ChannelPreviewState(
+                        channel = channel,
+                        candidateItem = candidate,
+                        fullItems = adjustedFullItems
+                    )
+                }
+                _channelPreviews.value = states
+
+                val currentChannel = _selectedChannel.value
+                sessionManager.selectChannel(
+                    channel = currentChannel,
+                    repository = repository,
+                    filterType = filter,
+                    refreshEpoch = refreshEpoch,
+                    sessionExposures = sessionExposures.toMap()
+                )
+            } finally {
+                _isRefreshing.value = false
+            }
+        }
     }
 }
