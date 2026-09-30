@@ -529,7 +529,26 @@ fun AuraMainContent(repository: MediaRepository) {
                     onUpdateRating = { id, rating -> repository.updateRating(id, rating) },
                     onReloadChannel = {
                         val currentChannel = channelViewModel.selectedChannel.value
-                        channelViewModel.selectChannel(currentChannel)
+                            ?: return@MediaDetailScreen
+                        val filterType = channelViewModel.selectedFilterType.value
+                        channelViewModel.reloadChannel(currentChannel, filterType) { reloadedItems ->
+                            if (reloadedItems.isNotEmpty()) {
+                                val sourceTitle = if (filterType == "PHOTOS") {
+                                    "Aura Moments"
+                                } else {
+                                    "Aura Channel — ${currentChannel.title}"
+                                }
+                                repository.setChannelPlaylist(
+                                    channel = currentChannel,
+                                    filterType = filterType,
+                                    items = reloadedItems,
+                                    initialIndex = 0,
+                                    sourceTitle = sourceTitle
+                                )
+                            } else {
+                                repository.clearPlaylist()
+                            }
+                        }
                     },
                     onDeleteMedia = { id ->
                         val isComparison = activePlaylist?.sourceTitle == "Compare Pair"
@@ -666,9 +685,17 @@ fun AuraMainContent(repository: MediaRepository) {
                                 viewModel = channelViewModel,
                                 onMediaSelect = { selectedItem, channelItems ->
                                     val index = channelItems.indexOfFirst { it.id == selectedItem.id }.coerceAtLeast(0)
+                                    val filterType = channelViewModel.selectedFilterType.value
+                                    val selectedChannel = channelViewModel.selectedChannel.value
                                     val isPhoto = !selectedItem.mediaType.equals("VIDEO", ignoreCase = true) && !selectedItem.mediaType.equals("MOVIE", ignoreCase = true)
-                                    val sourceTitle = if (isPhoto) "Aura Moments" else "Aura Channel — ${channelViewModel.selectedChannel.value.title}"
-                                    repository.setPlaylist(channelItems, index, sourceTitle)
+                                    val sourceTitle = if (isPhoto) "Aura Moments" else "Aura Channel — ${selectedChannel.title}"
+                                    repository.setChannelPlaylist(
+                                        channel = selectedChannel,
+                                        filterType = filterType,
+                                        items = channelItems,
+                                        initialIndex = index,
+                                        sourceTitle = sourceTitle
+                                    )
                                 }
                             )
                         }

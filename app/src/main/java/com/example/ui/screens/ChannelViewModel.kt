@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 
 data class ChannelPreviewState(
@@ -100,6 +101,36 @@ class ChannelViewModel(
                 refreshEpoch = refreshEpoch,
                 sessionExposures = sessionExposures.toMap()
             )
+        }
+    }
+
+    fun reloadChannel(
+        channel: Channel,
+        filterType: String = _selectedFilterType.value,
+        onComplete: (List<MediaItem>) -> Unit
+    ) {
+        viewModelScope.launch {
+            val available = repository.mediaItems.value
+            val db = repository.getDatabase()
+            val feedback = db?.programmingFeedbackDao()?.getAllFeedback() ?: emptyList()
+            val skipEvents = db?.aiSkipDao()?.observeAllEvents()?.firstOrNull() ?: emptyList()
+
+            val context = ChannelProgrammingContext(
+                availableMedia = available,
+                filterType = filterType,
+                tasteDNA = repository.tasteDNA.value,
+                programmingFeedback = feedback,
+                exposureMap = available.associate { it.id to it.exposureCount },
+                skipEvents = skipEvents,
+                refreshEpoch = refreshEpoch,
+                sessionExposures = sessionExposures.toMap()
+            )
+            val items = programmer.programChannel(
+                channel = channel,
+                context = context,
+                limit = 20
+            )
+            onComplete(items)
         }
     }
 

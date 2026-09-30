@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -41,7 +42,6 @@ import com.example.data.ChannelKind
 import com.example.data.MediaItem
 import com.example.ui.components.AuraMediaThumbnail
 import com.example.ui.components.AuraSectionHeader
-import com.example.ui.components.ChannelPreviewPool
 import com.example.ui.theme.*
 import com.example.util.MediaThumbnailFetcher
 import kotlinx.coroutines.delay
@@ -244,51 +244,63 @@ fun ChannelMotionThumbnail(
 ) {
     val context = LocalContext.current
     val uri = item.uriPath.ifEmpty { item.imageUrl }
-    val isVideo = item.mediaType.equals("VIDEO", ignoreCase = true) || item.mediaType.startsWith("VIDEO", ignoreCase = true)
+    val isVideo = item.mediaType.equals("VIDEO", ignoreCase = true) ||
+            item.mediaType.startsWith("VIDEO", ignoreCase = true)
 
-    var keyframes by remember(channelId, item.id, uri) { mutableStateOf<List<Bitmap>>(emptyList()) }
-    var currentFrameIndex by remember(channelId, item.id, uri) { mutableIntStateOf(0) }
+    // Key must be stable and unique per card
+    val rememberKey = "${channelId}_${item.id}_$uri"
 
-    LaunchedEffect(channelId, item.id, uri, isVideo) {
-        if (!isVideo || uri.isEmpty()) return@LaunchedEffect
+    var keyframes by remember(rememberKey) { mutableStateOf<List<ImageBitmap>>(emptyList()) }
+    var currentFrameIndex by remember(rememberKey) { mutableIntStateOf(0) }
 
-        val frame1 = MediaThumbnailFetcher.getFrameAtTime(context, uri, 1_000_000L)
-        val frame2 = MediaThumbnailFetcher.getFrameAtTime(context, uri, 4_000_000L)
-        val frame3 = MediaThumbnailFetcher.getFrameAtTime(context, uri, 7_000_000L)
-
-        val frames = listOfNotNull(frame1, frame2, frame3).filter { !it.isRecycled }
-        if (frames.isNotEmpty()) {
-            keyframes = frames
+    // Extract frames ONLY when visible. Convert to ImageBitmap immediately
+    // so we never hold a recyclable Android Bitmap.
+    LaunchedEffect(rememberKey, isVideo, isVisibleInViewport) {
+        if (!isVisibleInViewport || !isVideo || uri.isNullOrEmpty()) {
+            keyframes = emptyList()
+            return@LaunchedEffect
         }
+        val frameTimes = listOf(1_000_000L, 4_000_000L, 7_000_000L)
+        val extracted = frameTimes.mapNotNull { timeUs ->
+            MediaThumbnailFetcher.getFrameAtTime(context, uri, timeUs)
+                ?.takeIf { !it.isRecycled }
+                ?.asImageBitmap()
+        }
+        keyframes = extracted
     }
 
+    // Simple cycle – cancel automatically when leaving composition / viewport
     LaunchedEffect(isVisibleInViewport, keyframes) {
         if (!isVisibleInViewport || keyframes.size <= 1) return@LaunchedEffect
         while (true) {
-            delay(800L)
+            delay(900L)
             currentFrameIndex = (currentFrameIndex + 1) % keyframes.size
         }
     }
 
-    val activeBitmap = if (isVisibleInViewport && keyframes.isNotEmpty()) {
-        keyframes.getOrNull(currentFrameIndex)
+    val activeFrame = if (isVisibleInViewport && keyframes.isNotEmpty()) {
+        keyframes.getOrNull(currentFrameIndex % keyframes.size)
     } else null
 
-    if (activeBitmap != null && !activeBitmap.isRecycled) {
+    // Always clip the drawing surface itself
+    val clippedModifier = modifier.clip(RoundedCornerShape(16.dp))
+
+    if (activeFrame != null) {
         Image(
-            bitmap = activeBitmap.asImageBitmap(),
+            bitmap = activeFrame,
             contentDescription = item.title,
-            modifier = modifier,
-            contentScale = ContentScale.Crop
+            contentScale = ContentScale.Crop,
+            modifier = clippedModifier
         )
     } else {
+        // Static fallback – must be pure image, never a player
         AuraMediaThumbnail(
             itemId = item.id,
             mediaType = item.mediaType,
             imageUrl = item.imageUrl,
             uriPath = item.uriPath,
             title = item.title,
-            modifier = modifier,
+            modifier = clippedModifier,
             locationTag = "channel_motion_preview_${channelId}_${item.id}"
         )
     }
@@ -298,7 +310,6 @@ fun ChannelMotionThumbnail(
 fun ChannelPreviewCard(
     channelPreview: ChannelPreviewState,
     isSelected: Boolean,
-    previewPool: ChannelPreviewPool? = null,
     isVisibleInViewport: Boolean,
     onClick: (Channel, MediaItem?, List<MediaItem>) -> Unit,
     modifier: Modifier = Modifier

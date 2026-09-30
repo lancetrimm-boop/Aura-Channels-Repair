@@ -48,7 +48,9 @@ data class PlaylistState(
     val items: List<MediaItem> = emptyList(),
     val currentIndex: Int = 0,
     val authoritativeMediaId: String? = null,
-    val sourceTitle: String = ""
+    val sourceTitle: String = "",
+    val channel: Channel? = null,
+    val channelFilterType: String? = null
 ) {
     val currentItem: MediaItem? get() = items.getOrNull(currentIndex)
     val hasNext: Boolean get() = (currentIndex < items.size - 1)
@@ -677,6 +679,9 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
         }
     }
     
+    private val LOW_WATER_THRESHOLD = 5
+    private var isReplenishing = false
+
     fun setPlaylist(items: List<MediaItem>, initialIndex: Int, sourceTitle: String = "Playlist") {
         if (items.isEmpty()) { _activePlaylist.value = null; return }; _isPlayerActive.value = true
         val visible = listOf(CompatibilityStatus.PLAYABLE, CompatibilityStatus.PLAYABLE_SOFTWARE_DECODE, CompatibilityStatus.PLAYABLE_AFTER_CONVERSION, CompatibilityStatus.THUMBNAIL_FAILED, CompatibilityStatus.NEEDS_TRANSCODE, CompatibilityStatus.UNTESTED)
@@ -688,6 +693,40 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
         
         val idx = items.getOrNull(initialIndex)?.let { orig -> sanitized.indexOfFirst { it.id == orig.id }.let { if (it != -1) it else 0 } } ?: 0
         _activePlaylist.value = PlaylistState(sanitized, idx, sanitized.getOrNull(idx)?.id, sourceTitle)
+    }
+
+    fun setChannelPlaylist(
+        channel: Channel,
+        filterType: String,
+        items: List<MediaItem>,
+        initialIndex: Int = 0,
+        sourceTitle: String
+    ) {
+        if (items.isEmpty()) { _activePlaylist.value = null; return }
+        _isPlayerActive.value = true
+        val visible = listOf(
+            CompatibilityStatus.PLAYABLE,
+            CompatibilityStatus.PLAYABLE_SOFTWARE_DECODE,
+            CompatibilityStatus.PLAYABLE_AFTER_CONVERSION,
+            CompatibilityStatus.THUMBNAIL_FAILED,
+            CompatibilityStatus.NEEDS_TRANSCODE,
+            CompatibilityStatus.UNTESTED
+        )
+        val sanitized = items.filter { !it.isDeleted && it.compatibilityStatus in visible }
+        if (sanitized.isEmpty()) { _activePlaylist.value = null; return }
+
+        lastPlaybackPositionMs = 0L
+        isResumingFromBackground = false
+
+        val safeIndex = initialIndex.coerceIn(0, (sanitized.size - 1).coerceAtLeast(0))
+        _activePlaylist.value = PlaylistState(
+            items = sanitized,
+            currentIndex = safeIndex,
+            authoritativeMediaId = sanitized.getOrNull(safeIndex)?.id,
+            sourceTitle = sourceTitle,
+            channel = channel,
+            channelFilterType = filterType
+        )
     }
 
     fun extendActivePlaylist(newItems: List<MediaItem>) {
@@ -714,7 +753,26 @@ class MediaRepository(private val dispatcher: CoroutineDispatcher = Dispatchers.
         lastPlaybackPositionMs = 0L
         isResumingFromBackground = false
     }
-    fun selectPlaylistItem(index: Int) { _activePlaylist.update { current -> if (current != null && index in current.items.indices) { val next = current.items[index]; recordView(next.id); current.copy(currentIndex = index, authoritativeMediaId = next.id) } else current } }
+
+    fun selectPlaylistItem(index: Int) {
+        _activePlaylist.update { current ->
+            if (current != null && index in current.items.indices) {
+                val safeIndex = index.coerceIn(0, current.items.lastIndex)
+                val next = current.items[safeIndex]
+                recordView(next.id)
+
+                val remaining = current.items.size - 1 - safeIndex
+                if (current.channel != null && remaining <= LOW_WATER_THRESHOLD && !isReplenishing) {
+                    Log.d("MediaRepository", "Low-water mark hit for channel ${current.channel.id} (remaining=$remaining)")
+                }
+
+                current.copy(
+                    currentIndex = safeIndex,
+                    authoritativeMediaId = next.id
+                )
+            } else current
+        }
+    }
     fun nextPlaylistItem() { _activePlaylist.value?.let { if (it.hasNext) selectPlaylistItem(it.currentIndex + 1) } }
     fun previousPlaylistItem() { _activePlaylist.value?.let { if (it.hasPrevious) selectPlaylistItem(it.currentIndex - 1) } }
     

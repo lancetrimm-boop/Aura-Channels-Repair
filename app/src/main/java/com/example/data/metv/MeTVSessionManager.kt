@@ -76,9 +76,16 @@ class MeTVSessionManager(
             // Stale Session Guard
             if (activeSessionToken != token) return@launch
 
+            val meTvChannel = com.example.data.ChannelRegistry.get("ME_TV")!!
             val sourceTitle = if (filterType.equals("PHOTOS", ignoreCase = true)) "Aura Moments" else "Me TV Station"
             withContext(mainDispatcher) {
-                repository.setPlaylist(result.items, initialIndex, sourceTitle)
+                repository.setChannelPlaylist(
+                    channel = meTvChannel,
+                    filterType = filterType,
+                    items = result.items,
+                    initialIndex = initialIndex,
+                    sourceTitle = sourceTitle
+                )
             }
 
             updateScheduleState(result.items, result.explanations)

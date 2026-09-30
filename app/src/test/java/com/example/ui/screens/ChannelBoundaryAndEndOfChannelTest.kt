@@ -117,4 +117,50 @@ class ChannelBoundaryAndEndOfChannelTest {
         assertEquals(0, reloadedPlaylist?.currentIndex)
         assertEquals("FAVORITES", viewModel.selectedChannel.value.id)
     }
+
+    @Test
+    fun testSetChannelPlaylist_StoresChannelAndFilterType() = testScope.runTest {
+        val item1 = createItem("v1")
+        val item2 = createItem("v2")
+        val meTvChannel = ChannelRegistry.get("ME_TV")!!
+
+        repository.setChannelPlaylist(
+            channel = meTvChannel,
+            filterType = "VIDEOS",
+            items = listOf(item1, item2),
+            initialIndex = 0,
+            sourceTitle = "Me TV Channel"
+        )
+
+        val active = repository.activePlaylist.value
+        assertNotNull(active)
+        assertEquals(meTvChannel, active?.channel)
+        assertEquals("VIDEOS", active?.channelFilterType)
+        assertEquals("Me TV Channel", active?.sourceTitle)
+        assertEquals(0, active?.currentIndex)
+    }
+
+    @Test
+    fun testExtendActivePlaylist_AppendsWithoutIndexChange() = testScope.runTest {
+        val item1 = createItem("v1")
+        val item2 = createItem("v2")
+        val item3 = createItem("v3")
+        val meTvChannel = ChannelRegistry.get("ME_TV")!!
+
+        repository.setChannelPlaylist(
+            channel = meTvChannel,
+            filterType = "VIDEOS",
+            items = listOf(item1, item2),
+            initialIndex = 1,
+            sourceTitle = "Me TV Channel"
+        )
+
+        repository.extendActivePlaylist(listOf(item2, item3)) // item2 is duplicate, item3 is new
+
+        val active = repository.activePlaylist.value
+        assertNotNull(active)
+        assertEquals(3, active?.items?.size)
+        assertEquals(listOf("v1", "v2", "v3"), active?.items?.map { it.id })
+        assertEquals(1, active?.currentIndex) // Index stays at 1
+    }
 }
