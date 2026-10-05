@@ -13,12 +13,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.MediaItem
 import com.example.data.MediaRepository
-import com.example.ui.theme.*
+import com.example.ui.theme.AuraSpacing
+import com.example.ui.theme.DiscoveryViolet
+import com.example.ui.theme.ThemeMode
 
 enum class MyStuffTab(val title: String) {
     PROFILE("Profile"),
     DISCOVER("Discover"),
-    COLLECTIONS("Collections")
+    COLLECTIONS("Collections"),
+    SETTINGS("Settings")
 }
 
 @Composable
@@ -26,6 +29,8 @@ fun MyStuffScreen(
     repository: MediaRepository,
     discoverViewModel: DiscoverViewModel,
     mediaItems: List<MediaItem>,
+    themeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
     onNavigateToFavorites: () -> Unit,
     onNavigateToCleanup: () -> Unit,
     onNavigateToPrivacyPolicy: () -> Unit,
@@ -44,14 +49,14 @@ fun MyStuffScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(AuraBackground)
+            .background(MaterialTheme.colorScheme.background)
     ) {
         // My Stuff Top Bar Selector
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding(),
-            color = AuraCrispWhite,
+            color = MaterialTheme.colorScheme.surface,
             shadowElevation = 1.dp
         ) {
             Column(
@@ -63,7 +68,7 @@ fun MyStuffScreen(
                     text = "My Stuff",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Black,
-                    color = AuraMidnight
+                    color = MaterialTheme.colorScheme.onSurface
                 )
 
                 Spacer(modifier = Modifier.height(AuraSpacing.S))
@@ -78,7 +83,10 @@ fun MyStuffScreen(
                             onClick = { selectedTab = tab },
                             shape = RoundedCornerShape(20.dp),
                             color = if (isSelected) DiscoveryViolet else Color.Transparent,
-                            border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, AuraSubtleBorder),
+                            border = if (isSelected) null else androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.outline
+                            ),
                             modifier = Modifier.height(36.dp)
                         ) {
                             Box(
@@ -89,7 +97,7 @@ fun MyStuffScreen(
                                     text = tab.title,
                                     fontSize = 13.sp,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isSelected) Color.White else AuraMutedSlate
+                                    color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -129,6 +137,12 @@ fun MyStuffScreen(
                         onFavoriteToggle = onFavoriteToggle,
                         onLaunchAuraMoments = onLaunchAuraMoments,
                         onSearch = onSearch
+                    )
+                }
+                MyStuffTab.SETTINGS -> {
+                    ThemeSettingsContent(
+                        currentMode = themeMode,
+                        onModeSelected = onThemeModeChange
                     )
                 }
             }
